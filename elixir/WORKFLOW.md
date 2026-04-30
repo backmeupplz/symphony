@@ -1,17 +1,15 @@
 ---
 tracker:
   kind: kaneo
-  endpoint: "https://myground.online/api"
+  endpoint: "https://kaneo.icefish-betta.ts.net/api"
   api_key: "$KANEO_API_KEY"
   project_id: "$KANEO_PROJECT_ID"
   active_states:
-    - ready-for-build
+    - to-do
     - in-progress
-    - rework
-    - qa-needed
+    - in-review
   terminal_states:
     - done
-    - cancelled
 polling:
   interval_ms: 5000
 workspace:
@@ -28,7 +26,7 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -103,11 +101,10 @@ The agent should be able to talk to Kaneo through the injected `kaneo_api` tool.
 ## Status map
 
 - `backlog` -> out of scope for this workflow; do not modify.
-- `ready-for-build` -> queued; immediately transition to `in-progress` before active work.
-  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `human-acceptance`).
+- `to-do` -> queued; immediately transition to `in-progress` before active work.
+  - Special case: if a PR is already attached, treat as feedback/rework loop (run full PR feedback sweep, address or explicitly push back, revalidate, return to `in-review`).
 - `in-progress` -> implementation actively underway.
-- `qa-needed` -> validation required.
-- `human-acceptance` -> PR is attached and validated; waiting on human approval.
+- `in-review` -> PR is attached and validated; waiting on human approval.
 - `rework` -> reviewer or QA requested changes; planning + implementation required.
 - `done` -> terminal state; no further action required.
 
@@ -116,24 +113,23 @@ The agent should be able to talk to Kaneo through the injected `kaneo_api` tool.
 1. Fetch the issue by explicit ticket ID.
 2. Read the current state.
 3. Route to the matching flow:
-   - `backlog` -> do not modify issue content/state; stop and wait for human to move it to `ready-for-build`.
-   - `ready-for-build` -> immediately move to `in-progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
+   - `backlog` -> do not modify issue content/state; stop and wait for human to move it to `to-do`.
+   - `to-do` -> immediately move to `in-progress`, then ensure bootstrap workpad comment exists (create if missing), then start execution flow.
      - If PR is already attached, start by reviewing all open PR comments and deciding required changes vs explicit pushback responses.
    - `in-progress` -> continue execution flow from current scratchpad comment.
-   - `qa-needed` -> run validation/QA flow.
-   - `human-acceptance` -> wait and poll for decision/review updates.
+   - `in-review` -> wait and poll for decision/review updates.
    - `rework` -> run rework flow.
    - `done` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is `CLOSED` or `MERGED`, treat prior branch work as non-reusable for this run.
    - Create a fresh branch from `origin/main` and restart execution flow as a new attempt.
-5. For `ready-for-build` tickets, do startup sequencing in this exact order:
+5. For `to-do` tickets, do startup sequencing in this exact order:
    - `update_issue(..., state: "in-progress")`
    - find/create `## Codex Workpad` bootstrap comment
    - only then begin analysis/planning/implementation work.
 6. Add a short comment if state and issue content are inconsistent, then proceed with the safest flow.
 
-## Step 1: Start/continue execution (ready-for-build or in-progress)
+## Step 1: Start/continue execution (to-do or in-progress)
 
 1.  Find or create a single persistent scratchpad comment for the issue:
     - Search existing comments for a marker header: `## Codex Workpad`.
@@ -141,7 +137,7 @@ The agent should be able to talk to Kaneo through the injected `kaneo_api` tool.
     - If found, reuse that comment; do not create a new workpad comment.
     - If not found, create one workpad comment and use it for all updates.
     - Persist the workpad comment ID and only write progress updates to that ID.
-2.  If arriving from `ready-for-build`, do not delay on additional status transitions: the issue should already be `in-progress` before this step begins.
+2.  If arriving from `to-do`, do not delay on additional status transitions: the issue should already be `in-progress` before this step begins.
 3.  Immediately reconcile the workpad before new edits:
     - Check off items that are already done.
     - Expand/fix the plan so it is comprehensive for current scope.
@@ -166,7 +162,7 @@ The agent should be able to talk to Kaneo through the injected `kaneo_api` tool.
 
 ## PR feedback sweep protocol (required)
 
-When a ticket has an attached PR, run this protocol before moving to `human-acceptance`:
+When a ticket has an attached PR, run this protocol before moving to `in-review`:
 
 1. Identify the PR number from issue links/attachments.
 2. Gather feedback from all channels:
@@ -185,17 +181,17 @@ When a ticket has an attached PR, run this protocol before moving to `human-acce
 Use this only when completion is blocked by missing required tools or missing auth/permissions that cannot be resolved in-session.
 
 - GitHub is **not** a valid blocker by default. Always try fallback strategies first (alternate remote/auth mode, then continue publish/review flow).
-- Do not move to `human-acceptance` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
-- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `human-acceptance` with a short blocker brief in the workpad that includes:
+- Do not move to `in-review` for GitHub access/auth until all fallback strategies have been attempted and documented in the workpad.
+- If a non-GitHub required tool is missing, or required non-GitHub auth is unavailable, move the ticket to `in-review` with a short blocker brief in the workpad that includes:
   - what is missing,
   - why it blocks required acceptance/validation,
   - exact human action needed to unblock.
 - Keep the brief concise and action-oriented; do not add extra top-level comments outside the workpad.
 
-## Step 2: Execution phase (ready-for-build -> in-progress -> qa-needed)
+## Step 2: Execution phase (to-do -> in-progress -> in-review)
 
 1.  Determine current repo state (`branch`, `git status`, `HEAD`) and verify the kickoff `pull` sync result is already recorded in the workpad before implementation continues.
-2.  If current issue state is `ready-for-build`, move it to `in-progress`; otherwise leave the current state unchanged.
+2.  If current issue state is `to-do`, move it to `in-progress`; otherwise leave the current state unchanged.
 3.  Load the existing workpad comment and treat it as the active execution checklist.
     - Edit it liberally whenever reality changes (scope, risks, validation approach, discovered tasks).
 4.  Implement against the hierarchical TODOs and keep the comment current:
@@ -204,7 +200,7 @@ Use this only when completion is blocked by missing required tools or missing au
     - Keep parent/child structure intact as scope evolves.
     - Update the workpad immediately after each meaningful milestone (for example: reproduction complete, code change landed, validation run, review feedback addressed).
     - Never leave completed work unchecked in the plan.
-    - For tickets that started as `ready-for-build` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work.
+    - For tickets that started as `to-do` with an attached PR, run the full PR feedback sweep protocol immediately after kickoff and before new feature work.
 5.  Run validation/tests required for the scope.
     - Mandatory gate: execute all ticket-provided `Validation`/`Test Plan`/ `Testing` requirements when present; treat unmet items as incomplete work.
     - Prefer a targeted proof that directly demonstrates the behavior you changed.
@@ -223,23 +219,23 @@ Use this only when completion is blocked by missing required tools or missing au
     - Do not include PR URL in the workpad comment; keep PR linkage on the issue via attachment/link fields.
     - Add a short `### Confusions` section at the bottom when any part of task execution was unclear/confusing, with concise bullets.
     - Do not post any additional completion summary comment.
-11. Before moving to `qa-needed`, poll PR feedback and checks:
+11. Before moving to `in-review`, poll PR feedback and checks:
     - Read the PR `Manual QA Plan` comment (when present) and use it to sharpen UI/runtime test coverage for the current change.
     - Run the full PR feedback sweep protocol.
     - Confirm PR checks are passing (green) after the latest changes.
     - Confirm every required ticket-provided validation/test-plan item is explicitly marked complete in the workpad.
     - Repeat this check-address-verify loop until no outstanding comments remain and checks are fully passing.
     - Re-open and refresh the workpad before state transition so `Plan`, `Acceptance Criteria`, and `Validation` exactly match completed work.
-12. Only then move issue to `qa-needed`.
-    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `human-acceptance` with the blocker brief and explicit unblock actions.
-13. For `ready-for-build` tickets that already had a PR attached at kickoff:
+12. Only then move issue to `in-review`.
+    - Exception: if blocked by missing required non-GitHub tools/auth per the blocked-access escape hatch, move to `in-review` with the blocker brief and explicit unblock actions.
+13. For `to-do` tickets that already had a PR attached at kickoff:
     - Ensure all existing PR feedback was reviewed and resolved, including inline review comments (code changes or explicit, justified pushback response).
     - Ensure branch was pushed with any required updates.
-    - Then move to `qa-needed`.
+    - Then move to `in-review`.
 
 ## Step 3: QA, human acceptance, and merge handling
 
-1. When the issue is in `human-acceptance`, do not code or change ticket content.
+1. When the issue is in `in-review`, do not code or change ticket content.
 2. Poll for updates as needed, including GitHub PR review comments from humans and bots.
 3. If review feedback requires changes, move the issue to `rework` and follow the rework flow.
 4. If approved and merge is required, open and follow `.codex/skills/land/SKILL.md`, then run the `land` skill in a loop until the PR is merged. Do not call `gh pr merge` directly.
@@ -253,11 +249,11 @@ Use this only when completion is blocked by missing required tools or missing au
 4. Remove the existing `## Codex Workpad` comment from the issue.
 5. Create a fresh branch from `origin/main`.
 6. Start over from the normal kickoff flow:
-   - If current issue state is `ready-for-build`, move it to `in-progress`; otherwise keep the current state.
+   - If current issue state is `to-do`, move it to `in-progress`; otherwise keep the current state.
    - Create a new bootstrap `## Codex Workpad` comment.
    - Build a fresh plan/checklist and execute end-to-end.
 
-## Completion bar before qa-needed
+## Completion bar before in-review
 
 - Step 1/2 checklist is fully complete and accurately reflected in the single workpad comment.
 - Acceptance criteria and required ticket-provided validation items are complete.
@@ -271,7 +267,7 @@ Use this only when completion is blocked by missing required tools or missing au
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
 - For closed/merged branch PRs, create a new branch from `origin/main` and restart from reproduction/planning as if starting fresh.
-- If issue state is `backlog`, do not modify it; wait for human to move to `ready-for-build`.
+- If issue state is `backlog`, do not modify it; wait for human to move to `to-do`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (`## Codex Workpad`) per issue.
 - If comment editing is unavailable in-session, use the update script. Only report blocked if both MCP editing and script-based editing are unavailable.
@@ -281,8 +277,8 @@ Use this only when completion is blocked by missing required tools or missing au
   title/description/acceptance criteria, same-project assignment, a `related`
   link to the current issue, and `blockedBy` when the follow-up depends on the
   current issue.
-- Do not move to `qa-needed` unless the `Completion bar before qa-needed` is satisfied.
-- In `human-acceptance`, do not make changes; wait and poll.
+- Do not move to `in-review` unless the `Completion bar before in-review` is satisfied.
+- In `in-review`, do not make changes; wait and poll.
 - If state is terminal (`done`), do nothing and shut down.
 - Keep issue text concise, specific, and reviewer-oriented.
 - If blocked and no workpad exists yet, add one blocker comment describing blocker, impact, and next unblock action.

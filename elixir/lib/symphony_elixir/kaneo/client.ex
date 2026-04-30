@@ -153,7 +153,7 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp get_task(task_id) do
     with :ok <- validate_tracker_config(Config.settings!().tracker),
          {:ok, %{body: body}} <- request(:get, "/task/#{URI.encode(task_id)}") do
-      case normalize_task(body) do
+      case body |> unwrap_data() |> normalize_task() do
         %Issue{} = issue -> {:ok, issue}
         nil -> {:error, :kaneo_unknown_payload}
       end
@@ -205,6 +205,9 @@ defmodule SymphonyElixir.Kaneo.Client do
     end)
   end
 
+  defp flatten_tasks_response(%{"data" => data}), do: flatten_tasks_response(data)
+  defp flatten_tasks_response(%{data: data}), do: flatten_tasks_response(data)
+
   defp flatten_tasks_response(%{"columns" => columns}) when is_list(columns) do
     Enum.flat_map(columns, fn
       %{"tasks" => tasks} when is_list(tasks) -> tasks
@@ -224,6 +227,10 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp flatten_tasks_response(%{"tasks" => tasks}) when is_list(tasks), do: tasks
   defp flatten_tasks_response(%{tasks: tasks}) when is_list(tasks), do: tasks
   defp flatten_tasks_response(_response), do: []
+
+  defp unwrap_data(%{"data" => data}), do: data
+  defp unwrap_data(%{data: data}), do: data
+  defp unwrap_data(response), do: response
 
   defp normalize_task(task) when is_map(task) do
     %Issue{

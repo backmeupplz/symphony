@@ -28,11 +28,14 @@ defmodule SymphonyElixir.KaneoClientTest do
 
   test "flattens Kaneo column task responses" do
     response = %{
-      "columns" => [
-        %{"status" => "ready-for-build", "tasks" => [%{"id" => "task-1"}]},
-        %{"status" => "qa-needed", "tasks" => [%{"id" => "task-2"}]},
-        %{"status" => "empty"}
-      ]
+      "data" => %{
+        "columns" => [
+          %{"status" => "ready-for-build", "tasks" => [%{"id" => "task-1"}]},
+          %{"status" => "qa-needed", "tasks" => [%{"id" => "task-2"}]},
+          %{"status" => "empty"}
+        ]
+      },
+      "pagination" => %{"total" => 2}
     }
 
     assert [%{"id" => "task-1"}, %{"id" => "task-2"}] =
