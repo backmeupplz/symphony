@@ -3,10 +3,10 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
   alias SymphonyElixir.Codex.DynamicTool
 
-  test "tool_specs advertises the linear_graphql input contract" do
+  test "tool_specs advertises tracker tool input contracts" do
     assert [
              %{
-               "description" => description,
+               "description" => linear_description,
                "inputSchema" => %{
                  "properties" => %{
                    "query" => _,
@@ -16,10 +16,23 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
                  "type" => "object"
                },
                "name" => "linear_graphql"
+             },
+             %{
+               "description" => kaneo_description,
+               "inputSchema" => %{
+                 "properties" => %{
+                   "method" => _,
+                   "path" => _
+                 },
+                 "required" => ["method", "path"],
+                 "type" => "object"
+               },
+               "name" => "kaneo_api"
              }
            ] = DynamicTool.tool_specs()
 
-    assert description =~ "Linear"
+    assert linear_description =~ "Linear"
+    assert kaneo_description =~ "Kaneo"
   end
 
   test "unsupported tools return a failure payload with the supported tool list" do
@@ -30,7 +43,7 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
     assert Jason.decode!(response["output"]) == %{
              "error" => %{
                "message" => ~s(Unsupported dynamic tool: "not_a_real_tool".),
-               "supportedTools" => ["linear_graphql"]
+               "supportedTools" => ["linear_graphql", "kaneo_api"]
              }
            }
 
@@ -306,5 +319,81 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
 
     assert response["success"] == true
     assert response["output"] == ":ok"
+  end
+
+  test "kaneo_api executes authenticated REST requests" do
+    test_pid = self()
+
+    response =
+      DynamicTool.execute(
+        "kaneo_api",
+        %{
+          "method" => "POST",
+          "path" => "/comment/task-1",
+          "body" => %{"content" => "hello"},
+          "params" => %{"include" => "user"}
+        },
+        kaneo_client: fn method, path, opts ->
+          send(test_pid, {:kaneo_client_called, method, path, opts})
+          {:ok, %Req.Response{status: 200, body: %{"id" => "comment-1"}}}
+        end
+      )
+
+    assert_received {:kaneo_client_called, :post, "/comment/task-1", opts}
+    assert Keyword.fetch!(opts, :json) == %{"content" => "hello"}
+    assert Keyword.fetch!(opts, :params) == %{"include" => "user"}
+
+    assert response["success"] == true
+    assert Jason.decode!(response["output"]) == %{"id" => "comment-1"}
+  end
+
+  test "kaneo_api validates arguments before calling Kaneo" do
+    response =
+      DynamicTool.execute(
+        "kaneo_api",
+        %{"method" => "TRACE", "path" => "/task/task-1"},
+        kaneo_client: fn _method, _path, _opts ->
+          flunk("kaneo client should not be called when arguments are invalid")
+        end
+      )
+
+    assert response["success"] == false
+
+    assert Jason.decode!(response["output"]) == %{
+             "error" => %{
+               "message" => "`kaneo_api.method` must be one of GET, POST, PUT, PATCH, or DELETE."
+             }
+           }
+  end
+
+  test "kaneo_api formats transport and auth failures" do
+    missing_token =
+      DynamicTool.execute(
+        "kaneo_api",
+        %{"method" => "GET", "path" => "/task/task-1"},
+        kaneo_client: fn _method, _path, _opts -> {:error, :missing_kaneo_api_token} end
+      )
+
+    assert missing_token["success"] == false
+
+    assert Jason.decode!(missing_token["output"]) == %{
+             "error" => %{
+               "message" => "Symphony is missing Kaneo auth. Set `tracker.api_key` in `WORKFLOW.md` or export `KANEO_API_KEY`."
+             }
+           }
+
+    request_error =
+      DynamicTool.execute(
+        "kaneo_api",
+        %{"method" => "GET", "path" => "/task/task-1"},
+        kaneo_client: fn _method, _path, _opts -> {:error, {:kaneo_api_request, :timeout}} end
+      )
+
+    assert Jason.decode!(request_error["output"]) == %{
+             "error" => %{
+               "message" => "Kaneo REST request failed before receiving a successful response.",
+               "reason" => ":timeout"
+             }
+           }
   end
 end

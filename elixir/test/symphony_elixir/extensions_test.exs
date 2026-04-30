@@ -4,6 +4,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   import Phoenix.ConnTest
   import Phoenix.LiveViewTest
 
+  alias SymphonyElixir.Kaneo
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
 
@@ -36,6 +37,33 @@ defmodule SymphonyElixir.ExtensionsTest do
         _ ->
           Process.get({__MODULE__, :graphql_result})
       end
+    end
+  end
+
+  defmodule FakeKaneoClient do
+    def fetch_candidate_issues do
+      send(self(), :fetch_kaneo_candidate_issues_called)
+      {:ok, [:kaneo_candidate]}
+    end
+
+    def fetch_issues_by_states(states) do
+      send(self(), {:fetch_kaneo_issues_by_states_called, states})
+      {:ok, states}
+    end
+
+    def fetch_issue_states_by_ids(issue_ids) do
+      send(self(), {:fetch_kaneo_issue_states_by_ids_called, issue_ids})
+      {:ok, issue_ids}
+    end
+
+    def create_comment(issue_id, body) do
+      send(self(), {:kaneo_create_comment_called, issue_id, body})
+      Process.get({__MODULE__, :create_comment_result}, :ok)
+    end
+
+    def update_issue_state(issue_id, state_name) do
+      send(self(), {:kaneo_update_issue_state_called, issue_id, state_name})
+      Process.get({__MODULE__, :update_issue_state_result}, :ok)
     end
   end
 
@@ -79,12 +107,19 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    kaneo_client_module = Application.get_env(:symphony_elixir, :kaneo_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(kaneo_client_module) do
+        Application.delete_env(:symphony_elixir, :kaneo_client_module)
+      else
+        Application.put_env(:symphony_elixir, :kaneo_client_module, kaneo_client_module)
       end
     end)
 
@@ -203,6 +238,40 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "linear")
     assert SymphonyElixir.Tracker.adapter() == Adapter
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://myground.online/api",
+      tracker_project_slug: nil,
+      tracker_project_id: "project-id"
+    )
+
+    assert SymphonyElixir.Tracker.adapter() == Kaneo.Adapter
+  end
+
+  test "kaneo adapter delegates reads and writes" do
+    Application.put_env(:symphony_elixir, :kaneo_client_module, FakeKaneoClient)
+
+    assert {:ok, [:kaneo_candidate]} = Kaneo.Adapter.fetch_candidate_issues()
+    assert_receive :fetch_kaneo_candidate_issues_called
+
+    assert {:ok, ["ready-for-build"]} = Kaneo.Adapter.fetch_issues_by_states(["ready-for-build"])
+    assert_receive {:fetch_kaneo_issues_by_states_called, ["ready-for-build"]}
+
+    assert {:ok, ["task-1"]} = Kaneo.Adapter.fetch_issue_states_by_ids(["task-1"])
+    assert_receive {:fetch_kaneo_issue_states_by_ids_called, ["task-1"]}
+
+    assert :ok = Kaneo.Adapter.create_comment("task-1", "hello")
+    assert_receive {:kaneo_create_comment_called, "task-1", "hello"}
+
+    Process.put({FakeKaneoClient, :create_comment_result}, {:error, :boom})
+    assert {:error, :boom} = Kaneo.Adapter.create_comment("task-1", "broken")
+
+    assert :ok = Kaneo.Adapter.update_issue_state("task-1", "qa-needed")
+    assert_receive {:kaneo_update_issue_state_called, "task-1", "qa-needed"}
+
+    Process.put({FakeKaneoClient, :update_issue_state_result}, {:error, :boom})
+    assert {:error, :boom} = Kaneo.Adapter.update_issue_state("task-1", "broken")
   end
 
   test "linear adapter delegates reads and validates mutation responses" do

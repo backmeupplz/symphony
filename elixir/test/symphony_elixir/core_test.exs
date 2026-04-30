@@ -86,6 +86,24 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "123")
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_api_token: "",
+      tracker_project_slug: nil,
+      tracker_project_id: "project-id"
+    )
+
+    assert {:error, :missing_kaneo_api_token} = Config.validate!()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_project_id: ""
+    )
+
+    assert {:error, :missing_kaneo_project_id} = Config.validate!()
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -98,14 +116,14 @@ defmodule SymphonyElixir.CoreTest do
 
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
-    assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert Map.get(tracker, "kind") == "kaneo"
+    assert is_binary(Map.get(tracker, "project_id"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
     hooks = Map.get(config, "hooks", %{})
     assert is_map(hooks)
-    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/openai/symphony ."
+    assert Map.get(hooks, "after_create") =~ "git clone --depth 1 https://github.com/backmeupplz/symphony ."
     assert Map.get(hooks, "after_create") =~ "cd elixir && mise trust"
     assert Map.get(hooks, "after_create") =~ "mise exec -- mix deps.get"
     assert Map.get(hooks, "before_remove") =~ "cd elixir && mise exec -- mix workspace.before_remove"
@@ -147,6 +165,32 @@ defmodule SymphonyElixir.CoreTest do
     )
 
     assert Config.settings!().tracker.assignee == env_assignee
+  end
+
+  test "kaneo api token and project id resolve from env vars" do
+    previous_kaneo_api_key = System.get_env("KANEO_API_KEY")
+    previous_kaneo_project_id = System.get_env("KANEO_PROJECT_ID")
+
+    on_exit(fn ->
+      restore_env("KANEO_API_KEY", previous_kaneo_api_key)
+      restore_env("KANEO_PROJECT_ID", previous_kaneo_project_id)
+    end)
+
+    System.put_env("KANEO_API_KEY", "test-kaneo-api-key")
+    System.put_env("KANEO_PROJECT_ID", "test-kaneo-project-id")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://myground.online/api",
+      tracker_api_token: nil,
+      tracker_project_slug: nil,
+      tracker_project_id: nil,
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert Config.settings!().tracker.api_key == "test-kaneo-api-key"
+    assert Config.settings!().tracker.project_id == "test-kaneo-project-id"
+    assert :ok = Config.validate!()
   end
 
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
@@ -883,7 +927,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue)
 
-    assert prompt =~ "You are working on a Linear issue."
+    assert prompt =~ "You are working on a tracker issue."
     assert prompt =~ "Identifier: MT-777"
     assert prompt =~ "Title: Make fallback prompt useful"
     assert prompt =~ "Body:"
@@ -959,7 +1003,7 @@ defmodule SymphonyElixir.CoreTest do
 
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
-    assert prompt =~ "You are working on a Linear ticket `MT-616`"
+    assert prompt =~ "You are working on a Kaneo task `MT-616`"
     assert prompt =~ "Issue context:"
     assert prompt =~ "Identifier: MT-616"
     assert prompt =~ "Title: Use rich templates for WORKFLOW.md"

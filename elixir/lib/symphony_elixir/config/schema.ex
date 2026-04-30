@@ -49,6 +49,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:endpoint, :string, default: "https://api.linear.app/graphql")
       field(:api_key, :string)
       field(:project_slug, :string)
+      field(:project_id, :string)
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
@@ -59,7 +60,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :project_id, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
     end
@@ -366,10 +367,13 @@ defmodule SymphonyElixir.Config.Schema do
   end
 
   defp finalize_settings(settings) do
+    tracker_kind = settings.tracker.kind
+
     tracker = %{
       settings.tracker
-      | api_key: resolve_secret_setting(settings.tracker.api_key, System.get_env("LINEAR_API_KEY")),
-        assignee: resolve_secret_setting(settings.tracker.assignee, System.get_env("LINEAR_ASSIGNEE"))
+      | api_key: resolve_secret_setting(settings.tracker.api_key, tracker_api_key_fallback(tracker_kind)),
+        assignee: resolve_secret_setting(settings.tracker.assignee, tracker_assignee_fallback(tracker_kind)),
+        project_id: resolve_secret_setting(settings.tracker.project_id, System.get_env("KANEO_PROJECT_ID"))
     }
 
     workspace = %{
@@ -394,6 +398,12 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp normalize_keys(value) when is_list(value), do: Enum.map(value, &normalize_keys/1)
   defp normalize_keys(value), do: value
+
+  defp tracker_api_key_fallback("kaneo"), do: System.get_env("KANEO_API_KEY")
+  defp tracker_api_key_fallback(_kind), do: System.get_env("LINEAR_API_KEY")
+
+  defp tracker_assignee_fallback("kaneo"), do: System.get_env("KANEO_ASSIGNEE")
+  defp tracker_assignee_fallback(_kind), do: System.get_env("LINEAR_ASSIGNEE")
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
