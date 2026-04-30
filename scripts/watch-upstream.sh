@@ -29,16 +29,16 @@ git checkout main >/dev/null 2>&1 || true
 git pull --ff-only origin main >/dev/null
 
 counts=$(git rev-list --left-right --count origin/main...upstream/main)
-behind=$(printf '%s' "$counts" | awk '{print $1}')
-ahead=$(printf '%s' "$counts" | awk '{print $2}')
+fork_only=$(printf '%s' "$counts" | awk '{print $1}')
+upstream_only=$(printf '%s' "$counts" | awk '{print $2}')
 head_sha=$(git rev-parse --short HEAD)
 upstream_sha=$(git rev-parse --short upstream/main)
 
-echo "[$(timestamp)] origin/main=$head_sha upstream/main=$upstream_sha behind=$behind ahead=$ahead"
+echo "[$(timestamp)] origin/main=$head_sha upstream/main=$upstream_sha fork_only=$fork_only upstream_only=$upstream_only"
 
-if [ "$ahead" -gt 0 ]; then
-  echo "[$(timestamp)] upstream has $ahead new commit(s) not in fork"
-  git log --oneline --max-count "$ahead" origin/main..upstream/main | sed 's/^/[upstream] /'
+if [ "$upstream_only" -gt 0 ]; then
+  echo "[$(timestamp)] upstream has $upstream_only new commit(s) not in fork"
+  git log --oneline --max-count "$upstream_only" origin/main..upstream/main | sed 's/^/[upstream] /'
   exit 20
 fi
 
