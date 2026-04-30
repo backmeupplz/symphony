@@ -688,13 +688,23 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
-    case select_worker_host(state, preferred_worker_host) do
-      :no_worker_capacity ->
-        Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
+    with {:ok, %Issue{} = issue} <- maybe_assign_issue_to_worker(issue) do
+      case select_worker_host(state, preferred_worker_host) do
+        :no_worker_capacity ->
+          Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
+          state
+
+        worker_host ->
+          spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+      end
+    else
+      {:skip, reason} ->
+        Logger.info("Skipping dispatch after assignment check for #{issue_context(issue)}: #{inspect(reason)}")
         state
 
-      worker_host ->
-        spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+      {:error, reason} ->
+        Logger.warning("Failed to assign #{issue_context(issue)} before dispatch: #{inspect(reason)}")
+        schedule_issue_retry(state, issue.id, attempt, %{identifier: issue.identifier, error: "assignment failed: #{inspect(reason)}"})
     end
   end
 
@@ -1319,6 +1329,58 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_slots_available?(%Issue{} = issue, %State{} = state) do
     available_slots(state) > 0 and state_slots_available?(issue, state.running)
   end
+
+  defp maybe_assign_issue_to_worker(%Issue{} = issue) do
+    case configured_tracker_assignee() do
+      nil ->
+        {:ok, issue}
+
+      assignee_id ->
+        current_assignee = normalize_assignee_id(issue.assignee_id)
+
+        cond do
+          current_assignee == assignee_id ->
+            {:ok, issue}
+
+          is_binary(current_assignee) and current_assignee != "" ->
+            {:skip, {:assigned_elsewhere, current_assignee}}
+
+          true ->
+            claim_issue_for_worker(issue, assignee_id)
+        end
+    end
+  end
+
+  defp claim_issue_for_worker(%Issue{id: issue_id}, assignee_id)
+       when is_binary(issue_id) and is_binary(assignee_id) do
+    with :ok <- Tracker.assign_issue(issue_id, assignee_id),
+         {:ok, [%Issue{} = refreshed_issue | _]} <- Tracker.fetch_issue_states_by_ids([issue_id]) do
+      if normalize_assignee_id(refreshed_issue.assignee_id) == assignee_id do
+        {:ok, refreshed_issue}
+      else
+        {:skip, {:assignment_not_sticky, refreshed_issue.assignee_id}}
+      end
+    else
+      {:ok, []} -> {:skip, :missing_after_assignment}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp claim_issue_for_worker(issue, _assignee_id), do: {:ok, issue}
+
+  defp configured_tracker_assignee do
+    Config.settings!().tracker.assignee
+    |> normalize_assignee_id()
+  end
+
+  defp normalize_assignee_id(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_assignee_id(_value), do: nil
 
   defp apply_codex_token_delta(
          %{codex_totals: codex_totals} = state,

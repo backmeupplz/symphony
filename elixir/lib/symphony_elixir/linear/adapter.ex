@@ -73,6 +73,9 @@ defmodule SymphonyElixir.Linear.Adapter do
     end
   end
 
+  @spec assign_issue(String.t(), String.t()) :: :ok | {:error, term()}
+  def assign_issue(_issue_id, _assignee_id), do: {:error, :tracker_assignment_unsupported}
+
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
   end

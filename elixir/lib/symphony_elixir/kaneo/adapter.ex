@@ -26,6 +26,12 @@ defmodule SymphonyElixir.Kaneo.Adapter do
     client_module().update_issue_state(issue_id, state_name)
   end
 
+  @spec assign_issue(String.t(), String.t()) :: :ok | {:error, term()}
+  def assign_issue(issue_id, assignee_id)
+      when is_binary(issue_id) and is_binary(assignee_id) do
+    client_module().assign_issue(issue_id, assignee_id)
+  end
+
   defp client_module do
     Application.get_env(:symphony_elixir, :kaneo_client_module, Client)
   end

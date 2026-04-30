@@ -4,6 +4,7 @@ tracker:
   endpoint: "https://kaneo.icefish-betta.ts.net/api"
   api_key: "$KANEO_API_KEY"
   project_id: "$KANEO_PROJECT_ID"
+  assignee: "$KANEO_ASSIGNEE"
   active_states:
     - to-do
     - in-progress
@@ -17,6 +18,7 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
+    # Legacy example: git clone --depth 1 https://github.com/backmeupplz/symphony .
     repo_url="${SOURCE_REPO_URL:-https://github.com/backmeupplz/voicy}"
     repo_ref="${SOURCE_REPO_REF:-}"
     git clone --depth 1 "$repo_url" .
@@ -25,12 +27,22 @@ hooks:
       git checkout FETCH_HEAD
     fi
 
+    if [ -f elixir/mise.toml ]; then
+      cd elixir && mise trust && mise install && mise exec -- mix deps.get
+      cd ..
+    fi
+
     if [ -x .symphony/bootstrap.sh ]; then
       ./.symphony/bootstrap.sh
     elif [ -x scripts/symphony-bootstrap.sh ]; then
       ./scripts/symphony-bootstrap.sh
     fi
   before_remove: |
+    if [ -f elixir/mix.exs ]; then
+      cd elixir && mise exec -- mix workspace.before_remove
+      cd ..
+    fi
+
     if [ -x .symphony/cleanup.sh ]; then
       ./.symphony/cleanup.sh
     elif [ -x scripts/symphony-cleanup.sh ]; then
@@ -42,9 +54,9 @@ agent:
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=high app-server
   approval_policy: never
-  thread_sandbox: workspace-write
+  thread_sandbox: danger-full-access
   turn_sandbox_policy:
-    type: workspaceWrite
+    type: dangerFullAccess
 ---
 
 You are working on a Kaneo task `{{ issue.identifier }}`.
@@ -55,6 +67,12 @@ Continuation context:
 - Resume from the current workspace instead of restarting from scratch.
 - Do not repeat already-completed investigation or validation unless it is needed for new changes.
 {% endif %}
+
+## Issue context:
+- Identifier: {{ issue.identifier }}
+- Title: {{ issue.title }}
+- Current status: {{ issue.state }}
+- URL: {{ issue.url }}
 
 ## Portfolio context
 
@@ -107,13 +125,15 @@ For Telegram bots, assume OpenClaw can validate interactive behavior using the l
 
 1. This is an unattended orchestration session. Never ask a human to do routine follow-up inside the run.
 2. Only stop early for a true blocker: missing auth, missing required tool, missing required secret, or repo/task mismatch.
-3. Final message must report completed actions and blockers only. Do not include generic “next steps for user”.
+3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 4. Work only in the cloned repository copy.
 5. Use Kaneo via the injected `kaneo_api` tool for comments/status tracking when available.
 6. Keep a single persistent Kaneo workpad comment headed `## Codex Workpad`.
 7. Reproduce before changing code whenever there is a bug or concrete failing behavior.
 8. Treat ticket-provided `Validation`, `Test Plan`, or `Testing` sections as mandatory.
 9. If you discover follow-up work outside the current scope, create a separate Kaneo backlog (`planned`) task instead of silently expanding scope.
+10. If the repo includes `.codex/skills/land/SKILL.md`, open and follow `.codex/skills/land/SKILL.md` before making substantial changes.
+11. Do not call `gh pr merge` directly.
 
 ## Status map
 

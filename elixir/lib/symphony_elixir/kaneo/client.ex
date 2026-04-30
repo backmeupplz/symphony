@@ -24,7 +24,8 @@ defmodule SymphonyElixir.Kaneo.Client do
     tracker = Config.settings!().tracker
 
     with :ok <- validate_tracker_config(tracker),
-         {:ok, issues} <- do_fetch_by_states(tracker.project_id, tracker.active_states) do
+         {:ok, assignee_filter} <- routing_assignee_filter(),
+         {:ok, issues} <- do_fetch_by_states(tracker.project_id, tracker.active_states, assignee_filter) do
       {:ok, issues}
     end
   end
@@ -43,35 +44,48 @@ defmodule SymphonyElixir.Kaneo.Client do
     else
       tracker = Config.settings!().tracker
 
-      with :ok <- validate_tracker_config(tracker) do
-        do_fetch_by_states(tracker.project_id, normalized_states)
+      with :ok <- validate_tracker_config(tracker),
+           {:ok, assignee_filter} <- routing_assignee_filter() do
+        do_fetch_by_states(tracker.project_id, normalized_states, assignee_filter)
       end
     end
   end
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids) when is_list(issue_ids) do
-    issue_ids
-    |> Enum.uniq()
-    |> Enum.reduce_while({:ok, []}, fn
-      _issue_id, {:error, reason} ->
-        {:halt, {:error, reason}}
+    with {:ok, assignee_filter} <- routing_assignee_filter() do
+      issue_ids
+      |> Enum.uniq()
+      |> Enum.reduce_while({:ok, []}, fn
+        _issue_id, {:error, reason} ->
+          {:halt, {:error, reason}}
 
-      issue_id, {:ok, issues} ->
-        case get_task(issue_id) do
-          {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
-          {:error, reason} -> {:halt, {:error, reason}}
-        end
-    end)
-    |> case do
-      {:ok, issues} -> {:ok, Enum.reverse(issues)}
-      {:error, reason} -> {:error, reason}
+        issue_id, {:ok, issues} ->
+          case get_task(issue_id, assignee_filter) do
+            {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+      end)
+      |> case do
+        {:ok, issues} -> {:ok, Enum.reverse(issues)}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(task_id, body) when is_binary(task_id) and is_binary(body) do
     case request(:post, "/comment/#{URI.encode(task_id)}", json: %{content: body}) do
+      {:ok, %{status: status}} when status in 200..299 -> :ok
+      {:ok, response} -> {:error, {:kaneo_api_status, response.status}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec assign_issue(String.t(), String.t()) :: :ok | {:error, term()}
+  def assign_issue(task_id, assignee_id)
+      when is_binary(task_id) and is_binary(assignee_id) do
+    case request(:put, "/task/assignee/#{URI.encode(task_id)}", json: %{userId: assignee_id}) do
       {:ok, %{status: status}} when status in 200..299 -> :ok
       {:ok, response} -> {:error, {:kaneo_api_status, response.status}}
       {:error, reason} -> {:error, reason}
@@ -121,7 +135,7 @@ defmodule SymphonyElixir.Kaneo.Client do
   @spec flatten_tasks_response_for_test(term()) :: [map()]
   def flatten_tasks_response_for_test(response), do: flatten_tasks_response(response)
 
-  defp do_fetch_by_states(project_id, state_names) do
+  defp do_fetch_by_states(project_id, state_names, assignee_filter) do
     state_names
     |> Enum.reduce_while({:ok, []}, fn
       _state_name, {:error, reason} ->
@@ -135,7 +149,7 @@ defmodule SymphonyElixir.Kaneo.Client do
             fetched_issues =
               body
               |> flatten_tasks_response()
-              |> Enum.map(&normalize_task/1)
+              |> Enum.map(&normalize_task(&1, assignee_filter))
               |> Enum.reject(&is_nil/1)
 
             {:cont, {:ok, fetched_issues ++ issues}}
@@ -150,10 +164,10 @@ defmodule SymphonyElixir.Kaneo.Client do
     end
   end
 
-  defp get_task(task_id) do
+  defp get_task(task_id, assignee_filter) do
     with :ok <- validate_tracker_config(Config.settings!().tracker),
          {:ok, %{body: body}} <- request(:get, "/task/#{URI.encode(task_id)}") do
-      case body |> unwrap_data() |> normalize_task() do
+      case body |> unwrap_data() |> normalize_task(assignee_filter) do
         %Issue{} = issue -> {:ok, issue}
         nil -> {:error, :kaneo_unknown_payload}
       end
@@ -232,7 +246,12 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp unwrap_data(%{data: data}), do: data
   defp unwrap_data(response), do: response
 
-  defp normalize_task(task) when is_map(task) do
+  defp normalize_task(task, assignee_filter \\ nil)
+
+  defp normalize_task(task, assignee_filter) when is_map(task) do
+    assignee_id =
+      task_field(task, "userId") || get_in(task, ["assignee", "id"]) || get_in(task, [:assignee, :id])
+
     %Issue{
       id: task_field(task, "id"),
       identifier: task_identifier(task),
@@ -242,16 +261,16 @@ defmodule SymphonyElixir.Kaneo.Client do
       state: task_field(task, "status"),
       branch_name: nil,
       url: nil,
-      assignee_id: task_field(task, "userId") || get_in(task, ["assignee", "id"]) || get_in(task, [:assignee, :id]),
+      assignee_id: assignee_id,
       blocked_by: [],
       labels: [],
-      assigned_to_worker: true,
+      assigned_to_worker: assigned_to_worker?(assignee_id, assignee_filter),
       created_at: parse_datetime(task_field(task, "createdAt")),
       updated_at: parse_datetime(task_field(task, "updatedAt"))
     }
   end
 
-  defp normalize_task(_task), do: nil
+  defp normalize_task(_task, _assignee_filter), do: nil
 
   defp task_field(task, key) when is_map(task) and is_binary(key) do
     Map.get(task, key) || Map.get(task, String.to_atom(key))
@@ -270,6 +289,41 @@ defmodule SymphonyElixir.Kaneo.Client do
   end
 
   defp parse_priority(_priority), do: nil
+
+  defp assigned_to_worker?(_assignee_id, nil), do: true
+  defp assigned_to_worker?(nil, _assignee_filter), do: true
+
+  defp assigned_to_worker?(assignee_id, %{match_values: match_values}) when is_map(match_values) do
+    case normalize_assignee_match_value(assignee_id) do
+      nil -> false
+      normalized -> MapSet.member?(match_values, normalized)
+    end
+  end
+
+  defp assigned_to_worker?(_assignee_id, _assignee_filter), do: false
+
+  defp routing_assignee_filter do
+    case Config.settings!().tracker.assignee do
+      nil -> {:ok, nil}
+      assignee -> build_assignee_filter(assignee)
+    end
+  end
+
+  defp build_assignee_filter(assignee) when is_binary(assignee) do
+    case normalize_assignee_match_value(assignee) do
+      nil -> {:ok, nil}
+      normalized -> {:ok, %{configured_assignee: assignee, match_values: MapSet.new([normalized])}}
+    end
+  end
+
+  defp normalize_assignee_match_value(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_assignee_match_value(_value), do: nil
 
   defp parse_datetime(nil), do: nil
 
