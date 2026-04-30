@@ -29,8 +29,8 @@ git checkout main >/dev/null 2>&1 || true
 git pull --ff-only origin main >/dev/null
 
 counts=$(git rev-list --left-right --count origin/main...upstream/main)
-behind=${counts%% *}
-ahead=${counts##* }
+behind=$(printf '%s' "$counts" | awk '{print $1}')
+ahead=$(printf '%s' "$counts" | awk '{print $2}')
 head_sha=$(git rev-parse --short HEAD)
 upstream_sha=$(git rev-parse --short upstream/main)
 
