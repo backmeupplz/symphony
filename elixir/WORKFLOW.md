@@ -131,7 +131,17 @@ Treat work as one of these lanes:
 
 ### Telegram-specific testing
 
-For Telegram bots, assume OpenClaw can validate interactive behavior using the logged-in Telegram browser session on this Mac. If the repository/task also supports scripted bot validation and the required bot token is available in the environment (for example `TELEGRAM_TEST_BOT_TOKEN`), you may use it for automated checks; otherwise, leave crisp manual QA notes in Kaneo.
+For Telegram bots, prefer the repo-supported Telegram Web CDP path documented in
+`elixir/docs/telegram_web_qa.md` and implemented by `scripts/telegram_web_qa.mjs`. OpenClaw should
+use a dedicated logged-in Chrome QA profile launched with remote debugging, then run the helper to
+send and verify a timestamped message to the target bot. Do not use Peekaboo, AppleScript JavaScript
+execution, or Chrome's disabled "Allow JavaScript from Apple Events" path for Telegram Web QA.
+
+If the repository/task also supports scripted bot validation and the required bot token is available
+in the environment (for example `TELEGRAM_TEST_BOT_TOKEN`), you may use it for automated checks.
+Otherwise, use the CDP helper for Telegram-side proof. If the helper cannot connect to a logged-in
+Telegram Web profile, leave a crisp manual QA handoff note in Kaneo that includes the Chrome remote
+debugging URL, target bot, exact message text, and expected verification.
 
 ## Core operating rules
 
@@ -241,5 +251,7 @@ When a task needs browser/device/manual validation, make the handoff concrete. I
 - the user path to exercise;
 - the expected result;
 - any screenshots, recordings, or comments needed for approval.
+- for Telegram Web QA, whether the CDP helper was used, the Chrome remote debugging URL, target bot,
+  message text, and the helper's JSON verification output or the blocker preventing it.
 
 Keep issue text concise, specific, and reviewer-oriented.

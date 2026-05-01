@@ -811,11 +811,15 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
-    assert %{polling: %{checking?: true}} =
+    assert %{polling: %{checking?: _checking?}} =
              wait_for_snapshot(
                pid,
                fn
                  %{polling: %{checking?: true}} ->
+                   true
+
+                 %{polling: %{checking?: false, next_poll_in_ms: due_in_ms}}
+                 when is_integer(due_in_ms) and due_in_ms > 0 and due_in_ms <= 5_000 ->
                    true
 
                  _ ->

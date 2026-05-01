@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
+  alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
+
   defmodule ClaimingKaneoClient do
     def assign_issue(issue_id, assignee_id) do
       send(self(), {:kaneo_assign_issue, issue_id, assignee_id})
@@ -1206,6 +1209,18 @@ defmodule SymphonyElixir.CoreTest do
              "Project alpha ticket ALPHA-KANEO-9 from git@example.com:alpha/repo.git"
   end
 
+  test "prompt builder falls back to current workflow when issue workflow file is blank" do
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Global {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "MT-702",
+      title: "Blank workflow file",
+      workflow_file: "   "
+    }
+
+    assert PromptBuilder.build_prompt(issue) == "Global MT-702"
+  end
+
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: "Ticket {{ issue.identifier }}")
 
@@ -1362,10 +1377,43 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "This is an unattended orchestration session."
     assert prompt =~ "Only stop early for a true blocker"
     assert prompt =~ "Do not include \"next steps for user\""
+    assert prompt =~ "repo-supported Telegram Web CDP path"
+    assert prompt =~ "scripts/telegram_web_qa.mjs"
+    assert prompt =~ "Do not use Peekaboo, AppleScript JavaScript"
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+  end
+
+  test "Telegram Web QA helper and documentation stay aligned" do
+    workflow = File.read!("WORKFLOW.md")
+    docs = File.read!("docs/telegram_web_qa.md")
+    helper = File.read!(Path.expand("../scripts/telegram_web_qa.mjs", File.cwd!()))
+
+    assert workflow =~ "elixir/docs/telegram_web_qa.md"
+    assert workflow =~ "scripts/telegram_web_qa.mjs"
+    assert docs =~ "node scripts/telegram_web_qa.mjs"
+    assert docs =~ "--remote-debugging-port=9222"
+    assert docs =~ "@okamikron_bot"
+    assert docs =~ "Do not fall back to Peekaboo"
+    assert helper =~ "DEFAULT_CHAT = \"@okamikron_bot\""
+    assert helper =~ "Chrome DevTools"
+    assert helper =~ "Telegram Web profile is not logged in"
+  end
+
+  test "memory and linear tracker assignment adapters expose expected behavior" do
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    assert :ok = MemoryTracker.assign_issue("issue-1", "user-1")
+    assert_receive {:memory_tracker_assign, "issue-1", "user-1"}
+
+    Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+    assert :ok = MemoryTracker.assign_issue("issue-2", "user-2")
+    refute_receive {:memory_tracker_assign, "issue-2", "user-2"}
+
+    assert {:error, :tracker_assignment_unsupported} =
+             LinearAdapter.assign_issue("issue-1", "user-1")
   end
 
   test "prompt builder adds continuation guidance for retries" do

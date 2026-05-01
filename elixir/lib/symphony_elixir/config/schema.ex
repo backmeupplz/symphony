@@ -450,8 +450,6 @@ defmodule SymphonyElixir.Config.Schema do
     Enum.map(projects, &normalize_kaneo_project(&1, tracker))
   end
 
-  defp normalize_kaneo_projects(_projects, _tracker), do: []
-
   defp normalize_kaneo_project(project, tracker) do
     %{
       project

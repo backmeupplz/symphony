@@ -126,9 +126,6 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp fetch_projects_by_states(projects, states_fun) when is_list(projects) and is_function(states_fun, 1) do
     projects
     |> Enum.reduce_while({:ok, []}, fn
-      _project, {:error, reason} ->
-        {:halt, {:error, reason}}
-
       project, {:ok, issues} ->
         case project |> states_fun.() |> do_fetch_by_states(project) do
           {:ok, project_issues} -> {:cont, {:ok, project_issues ++ issues}}
@@ -144,9 +141,6 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp do_fetch_by_states(state_names, %{id: project_id} = project) do
     state_names
     |> Enum.reduce_while({:ok, []}, fn
-      _state_name, {:error, reason} ->
-        {:halt, {:error, reason}}
-
       state_name, {:ok, issues} ->
         query = [status: state_name, sortBy: "priority", sortOrder: "asc"]
 
@@ -205,7 +199,6 @@ defmodule SymphonyElixir.Kaneo.Client do
     Application.get_env(:symphony_elixir, :kaneo_request_fun, &Req.request/1)
   end
 
-  defp normalize_endpoint(nil), do: @default_endpoint
   defp normalize_endpoint(""), do: @default_endpoint
   defp normalize_endpoint(@linear_default_endpoint), do: @default_endpoint
 
@@ -273,15 +266,11 @@ defmodule SymphonyElixir.Kaneo.Client do
   end
 
   defp project_active_states(%{active_states: active_states}) when is_list(active_states), do: active_states
-  defp project_active_states(_project), do: []
 
   defp project_refresh_states(%{active_states: active_states, terminal_states: terminal_states}) do
-    (list_or_empty(active_states) ++ list_or_empty(terminal_states))
+    (active_states ++ terminal_states)
     |> Enum.uniq()
   end
-
-  defp list_or_empty(values) when is_list(values), do: values
-  defp list_or_empty(_values), do: []
 
   defp normalize_task(task, project \\ nil)
 
@@ -419,13 +408,11 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp assignee_filter(nil), do: nil
 
   defp assignee_filter(assignee) when is_binary(assignee) do
-    case build_assignee_filter(assignee) do
-      {:ok, filter} -> filter
-      _ -> nil
+    case normalize_assignee_match_value(assignee) do
+      nil -> nil
+      normalized -> %{configured_assignee: assignee, match_values: MapSet.new([normalized])}
     end
   end
-
-  defp assignee_filter(_assignee), do: nil
 
   defp blank_to_nil(value) when is_binary(value) do
     case String.trim(value) do
@@ -449,15 +436,6 @@ defmodule SymphonyElixir.Kaneo.Client do
     case normalize_assignee_match_value(assignee_id) do
       nil -> false
       normalized -> MapSet.member?(match_values, normalized)
-    end
-  end
-
-  defp assigned_to_worker?(_assignee_id, _assignee_filter), do: false
-
-  defp build_assignee_filter(assignee) when is_binary(assignee) do
-    case normalize_assignee_match_value(assignee) do
-      nil -> {:ok, nil}
-      normalized -> {:ok, %{configured_assignee: assignee, match_values: MapSet.new([normalized])}}
     end
   end
 
