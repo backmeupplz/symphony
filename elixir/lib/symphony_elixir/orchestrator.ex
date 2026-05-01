@@ -132,16 +132,11 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           case reason do
             :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; checking whether continuation is needed")
 
               state
               |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation,
-                worker_host: Map.get(running_entry, :worker_host),
-                workspace_path: Map.get(running_entry, :workspace_path)
-              })
+              |> maybe_schedule_normal_exit_continuation(issue_id, running_entry)
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -659,9 +654,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp active_state_set do
-    Config.settings!().tracker.active_states
-    |> Enum.map(&normalize_issue_state/1)
-    |> Enum.filter(&(&1 != ""))
+    Config.active_execution_state_names()
     |> MapSet.new()
   end
 
@@ -786,6 +779,47 @@ defmodule SymphonyElixir.Orchestrator do
       | completed: MapSet.put(state.completed, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
+  end
+
+  defp maybe_schedule_normal_exit_continuation(%State{} = state, issue_id, running_entry) do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [%Issue{} = refreshed_issue | _]} ->
+        cond do
+          retry_candidate_issue?(refreshed_issue, terminal_state_set()) ->
+            Logger.info("Issue still needs execution after normal agent exit: #{issue_context(refreshed_issue)} state=#{refreshed_issue.state}; scheduling continuation")
+
+            schedule_continuation_retry(state, issue_id, running_entry)
+
+          terminal_issue_state?(refreshed_issue.state, terminal_state_set()) ->
+            Logger.info("Issue reached terminal state after normal agent exit: #{issue_context(refreshed_issue)} state=#{refreshed_issue.state}; removing associated workspace")
+
+            cleanup_issue_workspace(running_entry.identifier, Map.get(running_entry, :worker_host))
+            release_issue_claim(state, issue_id)
+
+          true ->
+            Logger.info("Issue no longer needs active execution after normal agent exit: #{issue_context(refreshed_issue)} state=#{refreshed_issue.state}; not scheduling continuation")
+
+            release_issue_claim(state, issue_id)
+        end
+
+      {:ok, []} ->
+        Logger.info("Issue no longer visible after normal agent exit: issue_id=#{issue_id}; not scheduling continuation")
+        release_issue_claim(state, issue_id)
+
+      {:error, reason} ->
+        Logger.warning("Failed to refresh issue after normal agent exit: issue_id=#{issue_id} reason=#{inspect(reason)}; scheduling continuation check")
+
+        schedule_continuation_retry(state, issue_id, running_entry)
+    end
+  end
+
+  defp schedule_continuation_retry(%State{} = state, issue_id, running_entry) do
+    schedule_issue_retry(state, issue_id, 1, %{
+      identifier: running_entry.identifier,
+      delay_type: :continuation,
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path)
+    })
   end
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)

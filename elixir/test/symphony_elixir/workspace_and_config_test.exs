@@ -970,6 +970,26 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().worker.max_concurrent_agents_per_host == 2
   end
 
+  test "config excludes Kaneo review handoff from active execution states" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_active_states: ["to-do", "in-progress", "in-review", "rework"]
+    )
+
+    assert Config.active_execution_state?("to-do")
+    assert Config.active_execution_state?("in-progress")
+    assert Config.active_execution_state?("rework")
+    refute Config.active_execution_state?("in-review")
+    assert Config.active_execution_state_names() == ["to-do", "in-progress", "rework"]
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_active_states: ["Todo", "In Progress", "In Review"]
+    )
+
+    assert Config.active_execution_state?("In Review")
+  end
+
   test "schema helpers cover custom type and state limit validation" do
     assert StringOrMap.type() == :map
     assert StringOrMap.embed_as(:json) == :self

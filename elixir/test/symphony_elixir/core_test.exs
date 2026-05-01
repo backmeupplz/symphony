@@ -561,6 +561,8 @@ defmodule SymphonyElixir.CoreTest do
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
     ref = make_ref()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_kind: "memory")
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -569,6 +571,10 @@ defmodule SymphonyElixir.CoreTest do
         Process.exit(pid, :normal)
       end
     end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      %Issue{id: issue_id, identifier: "MT-558", title: "Resume", state: "In Progress"}
+    ])
 
     initial_state = :sys.get_state(pid)
 
@@ -596,6 +602,55 @@ defmodule SymphonyElixir.CoreTest do
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
     assert_due_in_range(due_at_ms, 500, 1_100)
+  end
+
+  test "normal worker exit after review handoff stops without continuation retry" do
+    issue_id = "issue-review-handoff"
+    ref = make_ref()
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_active_states: ["to-do", "in-progress", "in-review", "rework"]
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :ReviewHandoffOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [
+      %Issue{id: issue_id, identifier: "KANEO-200", title: "Review handoff", state: "in-review"}
+    ])
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "KANEO-200",
+      issue: %Issue{id: issue_id, identifier: "KANEO-200", state: "in-progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.completed, issue_id)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do
