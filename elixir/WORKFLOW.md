@@ -201,6 +201,12 @@ Use exactly one persistent Kaneo comment with this structure:
 ### Validation
 - [ ] targeted checks: `<command>`
 
+### Testing Handoff
+- Automated validation run:
+  - [ ] `<command>` - result/evidence
+- Manual QA for OpenClaw/humans:
+  - [ ] Required or not required; if required, include environment, path to exercise, expected result, and evidence to attach.
+
 ### Notes
 - timestamped notes
 
@@ -214,6 +220,9 @@ Rules:
 - Keep plan, acceptance criteria, and validation current.
 - Check items off as soon as they are actually complete.
 - Record reproduction evidence, sync results, validation commands, PR links, and blockers there.
+- Keep `### Testing Handoff` current before moving to `in-review`.
+- Distinguish automated validation Symphony already ran from manual QA still needed from OpenClaw or humans.
+- If no manual QA is needed, say `Manual QA: not required` and give the reason plus automated validation evidence.
 
 ### Step 2: implementation loop
 
@@ -243,6 +252,9 @@ Do not move a task to `in-review` unless all of the following are true:
 - the latest commit has green validation for the task scope;
 - branch is pushed and PR is linked on the Kaneo task;
 - all actionable PR feedback has been addressed or explicitly answered.
+- the workpad and PR description/comment contain a concise `Testing` or `Validation` handoff that separates:
+  - automated checks Symphony ran, with command/result evidence;
+  - manual QA still required, or an explicit `Manual QA: not required` with rationale.
 
 ## Manual QA handoff expectations
 
@@ -253,5 +265,9 @@ When a task needs browser/device/manual validation, make the handoff concrete. I
 - any screenshots, recordings, or comments needed for approval.
 - for Telegram Web QA, whether the CDP helper was used, the Chrome remote debugging URL, target bot,
   message text, and the helper's JSON verification output or the blocker preventing it.
+
+When manual QA is not needed, the handoff must still say so explicitly and list the automated
+checks that are enough for review. The handoff should let OpenClaw or Nikita decide whether an
+`in-review` task can move to `done` without rereading the whole branch.
 
 Keep issue text concise, specific, and reviewer-oriented.

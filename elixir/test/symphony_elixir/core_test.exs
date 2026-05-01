@@ -1382,8 +1382,43 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not use Peekaboo, AppleScript JavaScript"
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "### Testing Handoff"
+    assert prompt =~ "Automated validation run:"
+    assert prompt =~ "Manual QA for OpenClaw/humans:"
+    assert prompt =~ "Manual QA: not required"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
+  end
+
+  test "in-repo WORKFLOW.md requires automated and manual QA handoff details" do
+    workflow_path = Workflow.workflow_file_path()
+    Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
+
+    issue = %Issue{
+      identifier: "KANEO-301",
+      title: "Add handoff testing instructions",
+      description: "Implementation work needs a reviewer-ready testing handoff.",
+      state: "in-progress",
+      url: "https://example.org/issues/KANEO-301",
+      labels: ["handoff"]
+    }
+
+    on_exit(fn -> Workflow.set_workflow_file_path(workflow_path) end)
+
+    prompt = PromptBuilder.build_prompt(issue)
+    fixture = File.read!("test/fixtures/handoff/testing_handoff.md")
+
+    assert prompt =~ "Keep `### Testing Handoff` current before moving to `in-review`."
+    assert prompt =~ "Distinguish automated validation Symphony already ran from manual QA"
+    assert prompt =~ "automated checks Symphony ran, with command/result evidence"
+    assert prompt =~ "manual QA still required, or an explicit `Manual QA: not required`"
+    assert prompt =~ "The handoff should let OpenClaw or Nikita decide whether an"
+
+    assert fixture =~ "Automated validation run by Symphony:"
+    assert fixture =~ "`cd elixir && mix test test/symphony_elixir/core_test.exs:1354` passed"
+    assert fixture =~ "Manual QA for OpenClaw/humans:"
+    assert fixture =~ "Required in Chrome against the Kaneo project board."
+    assert fixture =~ "Manual QA: not required for prompt-only/doc changes"
   end
 
   test "Telegram Web QA helper and documentation stay aligned" do
