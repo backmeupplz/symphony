@@ -10,7 +10,8 @@ defmodule SymphonyElixir.PromptBuilder do
   @spec build_prompt(SymphonyElixir.Linear.Issue.t(), keyword()) :: String.t()
   def build_prompt(issue, opts \\ []) do
     template =
-      Workflow.current()
+      issue
+      |> issue_workflow()
       |> prompt_template!()
       |> parse_template!()
 
@@ -30,6 +31,15 @@ defmodule SymphonyElixir.PromptBuilder do
   defp prompt_template!({:error, reason}) do
     raise RuntimeError, "workflow_unavailable: #{inspect(reason)}"
   end
+
+  defp issue_workflow(%{workflow_file: workflow_file}) when is_binary(workflow_file) do
+    case String.trim(workflow_file) do
+      "" -> Workflow.current()
+      path -> Workflow.load(path)
+    end
+  end
+
+  defp issue_workflow(_issue), do: Workflow.current()
 
   defp parse_template!(prompt) when is_binary(prompt) do
     Solid.parse!(prompt)

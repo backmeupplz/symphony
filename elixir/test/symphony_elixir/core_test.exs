@@ -222,6 +222,60 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
+  test "kaneo tracker supports multiple routed projects without a global project id" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://myground.online/api",
+      tracker_api_token: "token",
+      tracker_project_slug: nil,
+      tracker_project_id: nil,
+      tracker_active_states: ["to-do", "in-progress"],
+      tracker_terminal_states: ["done"],
+      tracker_projects: [
+        %{
+          id: "project-a",
+          name: "Alpha Project",
+          slug: "alpha",
+          repo_url: "git@example.com:alpha/repo.git",
+          repo_ref: "main"
+        },
+        %{
+          id: "project-b",
+          slug: "beta",
+          repo_url: "git@example.com:beta/repo.git",
+          workflow_file: "/opt/beta/WORKFLOW.md",
+          active_states: ["queued"],
+          terminal_states: ["finished"]
+        }
+      ],
+      codex_command: "/bin/sh app-server"
+    )
+
+    assert :ok = Config.validate!()
+
+    projects = Config.kaneo_projects(Config.settings!())
+
+    assert [
+             %{
+               id: "project-a",
+               name: "Alpha Project",
+               slug: "alpha",
+               repo_url: "git@example.com:alpha/repo.git",
+               repo_ref: "main",
+               active_states: ["to-do", "in-progress"],
+               terminal_states: ["done"]
+             },
+             %{
+               id: "project-b",
+               slug: "beta",
+               repo_url: "git@example.com:beta/repo.git",
+               workflow_file: "/opt/beta/WORKFLOW.md",
+               active_states: ["queued"],
+               terminal_states: ["finished"]
+             }
+           ] = projects
+  end
+
   test "workflow file path defaults to WORKFLOW.md in the current working directory when app env is unset" do
     original_workflow_path = Workflow.workflow_file_path()
 
@@ -1120,6 +1174,36 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket MT-697"
     assert prompt =~ "created=2026-02-26T18:06:48Z"
     assert prompt =~ "updated=2026-02-26T18:07:03Z"
+  end
+
+  test "prompt builder can use a project-specific workflow file" do
+    project_workflow =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-project-workflow-#{System.unique_integer([:positive])}.md"
+      )
+
+    on_exit(fn -> File.rm(project_workflow) end)
+
+    File.write!(project_workflow, """
+    ---
+    ---
+    Project {{ issue.project_slug }} ticket {{ issue.identifier }} from {{ issue.source_repo_url }}
+    """)
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: "Global {{ issue.identifier }}")
+
+    issue = %Issue{
+      identifier: "ALPHA-KANEO-9",
+      title: "Project-specific prompt",
+      state: "to-do",
+      project_slug: "alpha",
+      source_repo_url: "git@example.com:alpha/repo.git",
+      workflow_file: project_workflow
+    }
+
+    assert PromptBuilder.build_prompt(issue) ==
+             "Project alpha ticket ALPHA-KANEO-9 from git@example.com:alpha/repo.git"
   end
 
   test "prompt builder normalizes nested date-like values, maps, and structs in issue fields" do

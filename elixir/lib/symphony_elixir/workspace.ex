@@ -298,7 +298,11 @@ defmodule SymphonyElixir.Workspace do
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command],
+          cd: workspace,
+          stderr_to_stdout: true,
+          env: hook_env(issue_context)
+        )
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -319,7 +323,15 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    remote_command =
+      [
+        remote_hook_env_exports(issue_context),
+        "cd #{shell_escape(workspace)} && #{command}"
+      ]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, remote_command, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -456,24 +468,90 @@ defmodule SymphonyElixir.Workspace do
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
+  defp hook_env(issue_context) when is_map(issue_context) do
+    [
+      {"KANEO_PROJECT_ID", Map.get(issue_context, :project_id)},
+      {"KANEO_PROJECT_NAME", Map.get(issue_context, :project_name)},
+      {"KANEO_PROJECT_SLUG", Map.get(issue_context, :project_slug)},
+      {"KANEO_PROJECT_KEY", Map.get(issue_context, :project_key)},
+      {"KANEO_TASK_ID", Map.get(issue_context, :issue_id)},
+      {"KANEO_TASK_IDENTIFIER", Map.get(issue_context, :issue_identifier)},
+      {"SOURCE_REPO_URL", Map.get(issue_context, :source_repo_url)},
+      {"SOURCE_REPO_REF", Map.get(issue_context, :source_repo_ref)},
+      {"SYMPHONY_WORKFLOW_FILE", Map.get(issue_context, :workflow_file)}
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp remote_hook_env_exports(issue_context) when is_map(issue_context) do
+    issue_context
+    |> hook_env()
+    |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_escape(value)}" end)
+  end
+
+  defp issue_context(%{
+         id: issue_id,
+         identifier: identifier,
+         project_id: project_id,
+         project_name: project_name,
+         project_slug: project_slug,
+         project_key: project_key,
+         source_repo_url: source_repo_url,
+         source_repo_ref: source_repo_ref,
+         workflow_file: workflow_file
+       }) do
+    %{
+      issue_id: issue_id,
+      issue_identifier: identifier || "issue",
+      project_id: project_id,
+      project_name: project_name,
+      project_slug: project_slug,
+      project_key: project_key,
+      source_repo_url: source_repo_url,
+      source_repo_ref: source_repo_ref,
+      workflow_file: workflow_file
+    }
+  end
+
   defp issue_context(%{id: issue_id, identifier: identifier}) do
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      project_id: nil,
+      project_name: nil,
+      project_slug: nil,
+      project_key: nil,
+      source_repo_url: nil,
+      source_repo_ref: nil,
+      workflow_file: nil
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      project_id: nil,
+      project_name: nil,
+      project_slug: nil,
+      project_key: nil,
+      source_repo_url: nil,
+      source_repo_ref: nil,
+      workflow_file: nil
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      project_id: nil,
+      project_name: nil,
+      project_slug: nil,
+      project_key: nil,
+      source_repo_url: nil,
+      source_repo_ref: nil,
+      workflow_file: nil
     }
   end
 

@@ -8,13 +8,6 @@ defmodule SymphonyElixir.Codex.DynamicTool do
 
   @linear_graphql_tool "linear_graphql"
   @kaneo_api_tool "kaneo_api"
-  @kaneo_methods %{
-    "get" => :get,
-    "post" => :post,
-    "put" => :put,
-    "patch" => :patch,
-    "delete" => :delete
-  }
   @linear_graphql_description """
   Execute a raw GraphQL query or mutation against Linear using Symphony's configured auth.
   """
@@ -157,24 +150,22 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_kaneo_api_arguments(_arguments), do: {:error, :invalid_kaneo_arguments}
 
   defp normalize_kaneo_method(arguments) do
-    arguments
-    |> Map.get("method", Map.get(arguments, :method))
-    |> normalize_kaneo_method_value()
-  end
+    methods = %{
+      "get" => :get,
+      "post" => :post,
+      "put" => :put,
+      "patch" => :patch,
+      "delete" => :delete
+    }
 
-  defp normalize_kaneo_method_value(method) when is_binary(method) do
-    normalized_method =
-      method
-      |> String.trim()
-      |> String.downcase()
-
-    case Map.fetch(@kaneo_methods, normalized_method) do
-      {:ok, method} -> {:ok, method}
-      :error -> {:error, :invalid_kaneo_method}
+    with method when is_binary(method) <- Map.get(arguments, "method") || Map.get(arguments, :method),
+         normalized <- method |> String.trim() |> String.downcase(),
+         method_atom when method_atom in [:get, :post, :put, :patch, :delete] <- Map.get(methods, normalized) do
+      {:ok, method_atom}
+    else
+      _ -> {:error, :invalid_kaneo_method}
     end
   end
-
-  defp normalize_kaneo_method_value(_method), do: {:error, :invalid_kaneo_method}
 
   defp normalize_kaneo_path(arguments) do
     case Map.get(arguments, "path") || Map.get(arguments, :path) do
