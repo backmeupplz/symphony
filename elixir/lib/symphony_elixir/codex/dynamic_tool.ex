@@ -150,35 +150,20 @@ defmodule SymphonyElixir.Codex.DynamicTool do
   defp normalize_kaneo_api_arguments(_arguments), do: {:error, :invalid_kaneo_arguments}
 
   defp normalize_kaneo_method(arguments) do
-    case Map.get(arguments, "method") || Map.get(arguments, :method) do
-      method when is_binary(method) ->
-        method =
-          method
-          |> String.trim()
-          |> String.downcase()
+    methods = %{
+      "get" => :get,
+      "post" => :post,
+      "put" => :put,
+      "patch" => :patch,
+      "delete" => :delete
+    }
 
-        case method do
-          "get" ->
-            {:ok, :get}
-
-          "post" ->
-            {:ok, :post}
-
-          "put" ->
-            {:ok, :put}
-
-          "patch" ->
-            {:ok, :patch}
-
-          "delete" ->
-            {:ok, :delete}
-
-          _ ->
-            {:error, :invalid_kaneo_method}
-        end
-
-      _ ->
-        {:error, :invalid_kaneo_method}
+    with method when is_binary(method) <- Map.get(arguments, "method") || Map.get(arguments, :method),
+         normalized <- method |> String.trim() |> String.downcase(),
+         method_atom when method_atom in [:get, :post, :put, :patch, :delete] <- Map.get(methods, normalized) do
+      {:ok, method_atom}
+    else
+      _ -> {:error, :invalid_kaneo_method}
     end
   end
 

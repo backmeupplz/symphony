@@ -151,6 +151,56 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+### Kaneo Multi-Project Routing
+
+For Kaneo, `tracker.project_id` remains supported for legacy single-project runners. To monitor
+several Kaneo projects from one Symphony process, configure `tracker.projects` instead:
+
+```yaml
+tracker:
+  kind: kaneo
+  endpoint: https://kaneo.example.com/api
+  api_key: $KANEO_API_KEY
+  active_states: [to-do, in-progress, in-review, rework]
+  terminal_states: [done]
+  projects:
+    - id: kaneo-project-alpha
+      slug: alpha
+      repo_url: git@github.com:your-org/alpha.git
+      repo_ref: main
+      workflow_file: /opt/symphony/workflows/alpha.md
+    - id: kaneo-project-beta
+      slug: beta
+      repo_url: git@github.com:your-org/beta.git
+```
+
+Symphony polls all configured projects and prefixes Kaneo task identifiers with the project key
+derived from `slug`, `name`, or `id`, for example `ALPHA-KANEO-1`. That project-aware identifier is
+used in run metadata and workspace paths, so tasks with the same Kaneo number in different projects
+do not collide.
+
+Workspace hooks receive per-task routing environment variables:
+
+- `KANEO_PROJECT_ID`, `KANEO_PROJECT_NAME`, `KANEO_PROJECT_SLUG`, `KANEO_PROJECT_KEY`
+- `KANEO_TASK_ID`, `KANEO_TASK_IDENTIFIER`
+- `SOURCE_REPO_URL`, `SOURCE_REPO_REF`
+- `SYMPHONY_WORKFLOW_FILE`
+
+The default clone hook can therefore stay generic:
+
+```sh
+repo_url="${SOURCE_REPO_URL:?missing SOURCE_REPO_URL}"
+repo_ref="${SOURCE_REPO_REF:-}"
+git clone --depth 1 "$repo_url" .
+if [ -n "$repo_ref" ]; then
+  git fetch --depth 1 origin "$repo_ref"
+  git checkout FETCH_HEAD
+fi
+```
+
+If `workflow_file` is set for a project, that file supplies the Codex prompt template for tasks from
+that project while the global `WORKFLOW.md` still owns runner configuration.
+
 ## Web dashboard
 
 The observability UI now runs on a minimal Phoenix stack:

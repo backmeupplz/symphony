@@ -681,16 +681,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
-    with {:ok, %Issue{} = issue} <- maybe_assign_issue_to_worker(issue) do
-      case select_worker_host(state, preferred_worker_host) do
-        :no_worker_capacity ->
-          Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
-          state
+    case maybe_assign_issue_to_worker(issue) do
+      {:ok, %Issue{} = issue} ->
+        case select_worker_host(state, preferred_worker_host) do
+          :no_worker_capacity ->
+            Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
+            state
 
-        worker_host ->
-          spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
-      end
-    else
+          worker_host ->
+            spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        end
+
       {:skip, reason} ->
         Logger.info("Skipping dispatch after assignment check for #{issue_context(issue)}: #{inspect(reason)}")
         state
@@ -1161,6 +1162,13 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           issue_id: issue_id,
           identifier: metadata.identifier,
+          project_id: metadata.issue.project_id,
+          project_name: metadata.issue.project_name,
+          project_slug: metadata.issue.project_slug,
+          project_key: metadata.issue.project_key,
+          tracker_identifier: metadata.issue.tracker_identifier,
+          source_repo_url: metadata.issue.source_repo_url,
+          source_repo_ref: metadata.issue.source_repo_ref,
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),

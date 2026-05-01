@@ -100,6 +100,19 @@ defmodule SymphonyElixir.Config do
 
   def review_handoff_state?(_tracker_kind, _state_name), do: false
 
+  @spec kaneo_projects(Schema.t()) :: [map()]
+  def kaneo_projects(%Schema{} = settings) do
+    tracker = settings.tracker
+
+    case tracker.projects do
+      projects when is_list(projects) and projects != [] ->
+        Enum.map(projects, &kaneo_project_to_map(&1, tracker))
+
+      _ ->
+        legacy_kaneo_project(tracker)
+    end
+  end
+
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
     case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do
@@ -170,28 +183,67 @@ defmodule SymphonyElixir.Config do
   end
 
   defp validate_semantics(settings) do
-    cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
-
-      settings.tracker.kind not in ["linear", "kaneo", "memory"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      settings.tracker.kind == "kaneo" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_kaneo_api_token}
-
-      settings.tracker.kind == "kaneo" and not is_binary(settings.tracker.project_id) ->
-        {:error, :missing_kaneo_project_id}
-
-      true ->
-        :ok
+    case settings.tracker.kind do
+      nil -> {:error, :missing_tracker_kind}
+      "linear" -> validate_linear_tracker(settings.tracker)
+      "kaneo" -> validate_kaneo_tracker(settings)
+      "memory" -> :ok
+      kind -> {:error, {:unsupported_tracker_kind, kind}}
     end
+  end
+
+  defp validate_linear_tracker(tracker) do
+    cond do
+      not is_binary(tracker.api_key) -> {:error, :missing_linear_api_token}
+      not is_binary(tracker.project_slug) -> {:error, :missing_linear_project_slug}
+      true -> :ok
+    end
+  end
+
+  defp validate_kaneo_tracker(settings) do
+    cond do
+      not is_binary(settings.tracker.api_key) -> {:error, :missing_kaneo_api_token}
+      kaneo_projects(settings) == [] -> {:error, :missing_kaneo_project_id}
+      true -> :ok
+    end
+  end
+
+  defp legacy_kaneo_project(tracker) do
+    case tracker.project_id do
+      project_id when is_binary(project_id) ->
+        [
+          %{
+            id: project_id,
+            name: nil,
+            slug: nil,
+            repo_url: System.get_env("SOURCE_REPO_URL"),
+            repo_ref: System.get_env("SOURCE_REPO_REF"),
+            workflow_file: nil,
+            assignee: tracker.assignee,
+            active_states: tracker.active_states,
+            terminal_states: tracker.terminal_states,
+            legacy?: true
+          }
+        ]
+
+      _ ->
+        []
+    end
+  end
+
+  defp kaneo_project_to_map(project, tracker) do
+    %{
+      id: project.id,
+      name: project.name,
+      slug: project.slug,
+      repo_url: project.repo_url,
+      repo_ref: project.repo_ref,
+      workflow_file: project.workflow_file,
+      assignee: project.assignee || tracker.assignee,
+      active_states: project.active_states || tracker.active_states,
+      terminal_states: project.terminal_states || tracker.terminal_states,
+      legacy?: false
+    }
   end
 
   defp format_config_error(reason) do

@@ -114,6 +114,7 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: entry.codex_total_tokens
       }
     }
+    |> Map.merge(project_payload(entry))
   end
 
   defp retry_entry_payload(entry) do
@@ -145,6 +146,7 @@ defmodule SymphonyElixirWeb.Presenter do
         total_tokens: running.codex_total_tokens
       }
     }
+    |> Map.merge(project_payload(running))
   end
 
   defp retry_issue_payload(retry) do
@@ -166,6 +168,22 @@ defmodule SymphonyElixirWeb.Presenter do
   defp workspace_host(running, retry) do
     (running && Map.get(running, :worker_host)) || (retry && Map.get(retry, :worker_host))
   end
+
+  defp project_payload(entry) when is_map(entry) do
+    %{
+      project_id: Map.get(entry, :project_id),
+      project_name: Map.get(entry, :project_name),
+      project_slug: Map.get(entry, :project_slug),
+      project_key: Map.get(entry, :project_key),
+      tracker_identifier: Map.get(entry, :tracker_identifier),
+      source_repo_url: Map.get(entry, :source_repo_url),
+      source_repo_ref: Map.get(entry, :source_repo_ref)
+    }
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+    |> Map.new()
+  end
+
+  defp project_payload(_entry), do: %{}
 
   defp recent_events_payload(running) do
     [

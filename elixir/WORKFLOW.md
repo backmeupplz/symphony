@@ -3,7 +3,15 @@ tracker:
   kind: kaneo
   endpoint: "https://kaneo.icefish-betta.ts.net/api"
   api_key: "$KANEO_API_KEY"
+  # Legacy single-project mode. For portfolio mode, prefer `projects` below and
+  # omit `project_id` so the runner can poll every configured Kaneo project.
   project_id: "$KANEO_PROJECT_ID"
+  # projects:
+  #   - id: "$KANEO_PROJECT_ID"
+  #     slug: sym
+  #     repo_url: "$SOURCE_REPO_URL"
+  #     repo_ref: "$SOURCE_REPO_REF"
+  #     workflow_file: "./elixir/WORKFLOW.md"
   assignee: "$KANEO_ASSIGNEE"
   active_states:
     - to-do
@@ -18,7 +26,7 @@ workspace:
 hooks:
   after_create: |
     # Legacy example: git clone --depth 1 https://github.com/backmeupplz/symphony .
-    repo_url="${SOURCE_REPO_URL:-https://github.com/backmeupplz/voicy}"
+    repo_url="${SOURCE_REPO_URL:-https://github.com/backmeupplz/symphony}"
     repo_ref="${SOURCE_REPO_REF:-}"
     git clone --depth 1 "$repo_url" .
     if [ -n "$repo_ref" ]; then
@@ -75,10 +83,15 @@ Continuation context:
 
 ## Portfolio context
 
-Nikita runs many projects across many repos. This Symphony runner still targets **one Kaneo project / one repo at a time** via environment:
+Nikita runs many projects across many repos. This Symphony runner can monitor a portfolio through
+`tracker.projects` in `WORKFLOW.md`. In legacy single-project mode:
 - `KANEO_PROJECT_ID` selects the Kaneo project.
 - `SOURCE_REPO_URL` selects the repository to clone.
 - `SOURCE_REPO_REF` is optional when a non-default branch or ref should be the base.
+
+In multi-project mode, each configured Kaneo project supplies its repo routing. The runner injects
+`KANEO_PROJECT_ID`, `SOURCE_REPO_URL`, `SOURCE_REPO_REF`, and `SYMPHONY_WORKFLOW_FILE` into workspace
+hooks for the specific task being executed.
 
 Be fluent about the broader portfolio, but only modify the repository cloned for this run. If the Kaneo task clearly refers to a different repo than the cloned one, stop, leave a concise blocker note in the workpad, and do not make speculative changes.
 

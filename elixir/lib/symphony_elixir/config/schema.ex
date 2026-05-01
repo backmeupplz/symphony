@@ -42,6 +42,43 @@ defmodule SymphonyElixir.Config.Schema do
     use Ecto.Schema
     import Ecto.Changeset
 
+    defmodule KaneoProject do
+      @moduledoc false
+      use Ecto.Schema
+      import Ecto.Changeset
+
+      @primary_key false
+
+      embedded_schema do
+        field(:id, :string)
+        field(:name, :string)
+        field(:slug, :string)
+        field(:repo_url, :string)
+        field(:repo_ref, :string)
+        field(:workflow_file, :string)
+        field(:assignee, :string)
+        field(:active_states, {:array, :string})
+        field(:terminal_states, {:array, :string})
+      end
+
+      @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
+      def changeset(schema, attrs) do
+        schema
+        |> cast(attrs, [
+          :id,
+          :name,
+          :slug,
+          :repo_url,
+          :repo_ref,
+          :workflow_file,
+          :assignee,
+          :active_states,
+          :terminal_states
+        ])
+        |> validate_required([:id])
+      end
+    end
+
     @primary_key false
 
     embedded_schema do
@@ -53,6 +90,7 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      embeds_many(:projects, KaneoProject, on_replace: :delete)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -63,6 +101,7 @@ defmodule SymphonyElixir.Config.Schema do
         [:kind, :endpoint, :api_key, :project_slug, :project_id, :assignee, :active_states, :terminal_states],
         empty_values: []
       )
+      |> cast_embed(:projects, with: &KaneoProject.changeset/2)
     end
   end
 
@@ -376,6 +415,8 @@ defmodule SymphonyElixir.Config.Schema do
         project_id: resolve_secret_setting(settings.tracker.project_id, System.get_env("KANEO_PROJECT_ID"))
     }
 
+    tracker = %{tracker | projects: normalize_kaneo_projects(settings.tracker.projects, tracker)}
+
     workspace = %{
       settings.workspace
       | root: resolve_path_value(settings.workspace.root, Path.join(System.tmp_dir!(), "symphony_workspaces"))
@@ -404,6 +445,27 @@ defmodule SymphonyElixir.Config.Schema do
 
   defp tracker_assignee_fallback("kaneo"), do: System.get_env("KANEO_ASSIGNEE")
   defp tracker_assignee_fallback(_kind), do: System.get_env("LINEAR_ASSIGNEE")
+
+  defp normalize_kaneo_projects(projects, tracker) when is_list(projects) do
+    Enum.map(projects, &normalize_kaneo_project(&1, tracker))
+  end
+
+  defp normalize_kaneo_projects(_projects, _tracker), do: []
+
+  defp normalize_kaneo_project(project, tracker) do
+    %{
+      project
+      | repo_url: resolve_secret_setting(project.repo_url, nil),
+        repo_ref: resolve_secret_setting(project.repo_ref, nil),
+        workflow_file: resolve_path_value(project.workflow_file, nil),
+        assignee: resolve_secret_setting(project.assignee, tracker.assignee),
+        active_states: default_project_states(project.active_states, tracker.active_states),
+        terminal_states: default_project_states(project.terminal_states, tracker.terminal_states)
+    }
+  end
+
+  defp default_project_states(states, _fallback) when is_list(states), do: states
+  defp default_project_states(_states, fallback), do: fallback
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)
@@ -444,6 +506,8 @@ defmodule SymphonyElixir.Config.Schema do
         path
     end
   end
+
+  defp resolve_path_value(_value, default), do: default
 
   defp resolve_env_value(value, fallback) when is_binary(value) do
     case env_reference_name(value) do

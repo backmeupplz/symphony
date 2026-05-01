@@ -56,6 +56,40 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Path.basename(first_workspace) == "MT_Det"
   end
 
+  test "workspace names and hooks use Kaneo project routing context" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-project-routed-workspace-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create: "printf '%s\\n' \"$KANEO_PROJECT_ID\" > project.txt && printf '%s\\n' \"$SOURCE_REPO_URL\" > repo.txt && printf '%s\\n' \"$SOURCE_REPO_REF\" > ref.txt"
+      )
+
+      issue = %Issue{
+        id: "task-1",
+        identifier: "ALPHA-KANEO-1",
+        project_id: "project-alpha",
+        project_name: "Alpha",
+        project_slug: "alpha",
+        project_key: "ALPHA",
+        source_repo_url: "git@example.com:alpha/repo.git",
+        source_repo_ref: "main"
+      }
+
+      assert {:ok, workspace} = Workspace.create_for_issue(issue)
+      assert Path.basename(workspace) == "ALPHA-KANEO-1"
+      assert File.read!(Path.join(workspace, "project.txt")) == "project-alpha\n"
+      assert File.read!(Path.join(workspace, "repo.txt")) == "git@example.com:alpha/repo.git\n"
+      assert File.read!(Path.join(workspace, "ref.txt")) == "main\n"
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "workspace reuses existing issue directory without deleting local changes" do
     workspace_root =
       Path.join(
