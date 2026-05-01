@@ -419,9 +419,9 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp assignee_filter(nil), do: nil
 
   defp assignee_filter(assignee) when is_binary(assignee) do
-    case build_assignee_filter(assignee) do
-      {:ok, filter} -> filter
-      _ -> nil
+    case normalize_assignee_match_value(assignee) do
+      nil -> nil
+      normalized -> %{configured_assignee: assignee, match_values: MapSet.new([normalized])}
     end
   end
 
@@ -449,15 +449,6 @@ defmodule SymphonyElixir.Kaneo.Client do
     case normalize_assignee_match_value(assignee_id) do
       nil -> false
       normalized -> MapSet.member?(match_values, normalized)
-    end
-  end
-
-  defp assigned_to_worker?(_assignee_id, _assignee_filter), do: false
-
-  defp build_assignee_filter(assignee) when is_binary(assignee) do
-    case normalize_assignee_match_value(assignee) do
-      nil -> {:ok, nil}
-      normalized -> {:ok, %{configured_assignee: assignee, match_values: MapSet.new([normalized])}}
     end
   end
 

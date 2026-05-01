@@ -183,8 +183,6 @@ defmodule SymphonyElixirWeb.Presenter do
     |> Map.new()
   end
 
-  defp project_payload(_entry), do: %{}
-
   defp recent_events_payload(running) do
     [
       %{
