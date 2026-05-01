@@ -28,9 +28,10 @@ git checkout main >/dev/null 2>&1 || true
 
 git pull --ff-only origin main >/dev/null
 
-counts=$(git rev-list --left-right --count origin/main...upstream/main)
-fork_only=$(printf '%s' "$counts" | awk '{print $1}')
-upstream_only=$(printf '%s' "$counts" | awk '{print $2}')
+counts_raw=$(git rev-list --left-right --count origin/main...upstream/main)
+counts=(${(ps:\t:)counts_raw})
+fork_only="${counts[1]}"
+upstream_only="${counts[2]}"
 head_sha=$(git rev-parse --short HEAD)
 upstream_sha=$(git rev-parse --short upstream/main)
 
