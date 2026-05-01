@@ -8,7 +8,6 @@ tracker:
   active_states:
     - to-do
     - in-progress
-    - in-review
     - rework
   terminal_states:
     - done

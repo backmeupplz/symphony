@@ -26,6 +26,11 @@ defmodule SymphonyElixir.Config do
           turn_sandbox_policy: map()
         }
 
+  @review_handoff_states_by_tracker_kind %{
+    "kaneo" => ["in-review"],
+    "memory" => ["in-review"]
+  }
+
   @spec settings() :: {:ok, Schema.t()} | {:error, term()}
   def settings do
     case Workflow.current() do
@@ -61,6 +66,40 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: settings!().agent.max_concurrent_agents
 
+  @spec active_execution_state?(term()) :: boolean()
+  def active_execution_state?(state_name) when is_binary(state_name) do
+    config = settings!()
+    normalized_state = normalize_issue_state(state_name)
+
+    Enum.any?(config.tracker.active_states, fn active_state ->
+      normalize_issue_state(active_state) == normalized_state
+    end) and not review_handoff_state?(config.tracker.kind, normalized_state)
+  end
+
+  def active_execution_state?(_state_name), do: false
+
+  @spec active_execution_state_names() :: [String.t()]
+  def active_execution_state_names do
+    config = settings!()
+    tracker_kind = config.tracker.kind
+
+    config.tracker.active_states
+    |> Enum.map(&normalize_issue_state/1)
+    |> Enum.reject(&(&1 == "" or review_handoff_state?(tracker_kind, &1)))
+  end
+
+  @spec review_handoff_state?(String.t() | nil, String.t()) :: boolean()
+  def review_handoff_state?(tracker_kind, state_name) when is_binary(state_name) do
+    normalized_kind = normalize_tracker_kind(tracker_kind)
+    normalized_state = normalize_issue_state(state_name)
+
+    @review_handoff_states_by_tracker_kind
+    |> Map.get(normalized_kind, [])
+    |> Enum.any?(&(normalize_issue_state(&1) == normalized_state))
+  end
+
+  def review_handoff_state?(_tracker_kind, _state_name), do: false
+
   @spec codex_turn_sandbox_policy(Path.t() | nil) :: map()
   def codex_turn_sandbox_policy(workspace \\ nil) do
     case Schema.resolve_runtime_turn_sandbox_policy(settings!(), workspace) do
@@ -82,6 +121,22 @@ defmodule SymphonyElixir.Config do
         @default_prompt_template
     end
   end
+
+  defp normalize_issue_state(state_name) when is_binary(state_name) do
+    state_name
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_issue_state(_state_name), do: ""
+
+  defp normalize_tracker_kind(kind) when is_binary(kind) do
+    kind
+    |> String.trim()
+    |> String.downcase()
+  end
+
+  defp normalize_tracker_kind(_kind), do: ""
 
   @spec server_port() :: non_neg_integer() | nil
   def server_port do
