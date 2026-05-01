@@ -114,30 +114,29 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp validate_semantics(settings) do
-    cond do
-      is_nil(settings.tracker.kind) ->
-        {:error, :missing_tracker_kind}
+  defp validate_semantics(%{tracker: %{kind: nil}}), do: {:error, :missing_tracker_kind}
 
-      settings.tracker.kind not in ["linear", "kaneo", "memory"] ->
-        {:error, {:unsupported_tracker_kind, settings.tracker.kind}}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_linear_api_token}
-
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
-
-      settings.tracker.kind == "kaneo" and not is_binary(settings.tracker.api_key) ->
-        {:error, :missing_kaneo_api_token}
-
-      settings.tracker.kind == "kaneo" and not is_binary(settings.tracker.project_id) ->
-        {:error, :missing_kaneo_project_id}
-
-      true ->
-        :ok
-    end
+  defp validate_semantics(%{tracker: %{kind: kind}}) when kind not in ["linear", "kaneo", "memory"] do
+    {:error, {:unsupported_tracker_kind, kind}}
   end
+
+  defp validate_semantics(%{tracker: %{kind: "linear", api_key: api_key}})
+       when not is_binary(api_key),
+       do: {:error, :missing_linear_api_token}
+
+  defp validate_semantics(%{tracker: %{kind: "linear", project_slug: project_slug}})
+       when not is_binary(project_slug),
+       do: {:error, :missing_linear_project_slug}
+
+  defp validate_semantics(%{tracker: %{kind: "kaneo", api_key: api_key}})
+       when not is_binary(api_key),
+       do: {:error, :missing_kaneo_api_token}
+
+  defp validate_semantics(%{tracker: %{kind: "kaneo", project_id: project_id}})
+       when not is_binary(project_id),
+       do: {:error, :missing_kaneo_project_id}
+
+  defp validate_semantics(_settings), do: :ok
 
   defp format_config_error(reason) do
     case reason do

@@ -1,6 +1,35 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  defmodule ClaimingKaneoClient do
+    def assign_issue(issue_id, assignee_id) do
+      send(self(), {:kaneo_assign_issue, issue_id, assignee_id})
+      Process.put({__MODULE__, :assigned_assignee_id}, assignee_id)
+      :ok
+    end
+
+    def fetch_issue_states_by_ids([issue_id]) do
+      assignee_id =
+        case Process.get({__MODULE__, :assignment_mode}, :sticky) do
+          :not_sticky -> nil
+          _ -> Process.get({__MODULE__, :assigned_assignee_id})
+        end
+
+      {:ok,
+       [
+         %SymphonyElixir.Linear.Issue{
+           id: issue_id,
+           identifier: "KANEO-1",
+           state: "In Progress",
+           title: "Claim active issue",
+           description: "Claim should be sticky",
+           assignee_id: assignee_id,
+           assigned_to_worker: is_binary(assignee_id)
+         }
+       ]}
+    end
+  end
+
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -509,6 +538,188 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.has_key?(updated_state.running, issue_id)
     assert MapSet.member?(updated_state.claimed, issue_id)
     assert updated_entry.issue.state == "In Progress"
+  end
+
+  test "reconcile claims unassigned Kaneo running issues before refreshing active state" do
+    previous_kaneo_client_module = Application.get_env(:symphony_elixir, :kaneo_client_module)
+
+    on_exit(fn ->
+      restore_app_env(:kaneo_client_module, previous_kaneo_client_module)
+    end)
+
+    Application.put_env(:symphony_elixir, :kaneo_client_module, ClaimingKaneoClient)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_api_token: "kaneo-token",
+      tracker_project_slug: nil,
+      tracker_project_id: "project-1",
+      tracker_assignee: "worker-1",
+      tracker_active_states: ["Todo", "In Progress", "In Review"]
+    )
+
+    issue_id = "issue-unassigned-refresh"
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: nil,
+          identifier: "KANEO-1",
+          issue: %Issue{
+            id: issue_id,
+            identifier: "KANEO-1",
+            state: "Todo"
+          },
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "KANEO-1",
+      state: "In Progress",
+      title: "Claim active issue",
+      description: "Active refresh should claim",
+      labels: [],
+      assignee_id: nil,
+      assigned_to_worker: true
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+    updated_entry = updated_state.running[issue_id]
+
+    assert_receive {:kaneo_assign_issue, ^issue_id, "worker-1"}
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert updated_entry.issue.assignee_id == "worker-1"
+  end
+
+  test "reconcile retries Kaneo running issues when active refresh assignment is not sticky" do
+    previous_kaneo_client_module = Application.get_env(:symphony_elixir, :kaneo_client_module)
+
+    on_exit(fn ->
+      restore_app_env(:kaneo_client_module, previous_kaneo_client_module)
+    end)
+
+    Application.put_env(:symphony_elixir, :kaneo_client_module, ClaimingKaneoClient)
+    Process.put({ClaimingKaneoClient, :assignment_mode}, :not_sticky)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_api_token: "kaneo-token",
+      tracker_project_slug: nil,
+      tracker_project_id: "project-1",
+      tracker_assignee: "worker-1",
+      tracker_active_states: ["Todo", "In Progress", "In Review"]
+    )
+
+    issue_id = "issue-not-sticky-refresh"
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "KANEO-2",
+          issue: %Issue{
+            id: issue_id,
+            identifier: "KANEO-2",
+            state: "Todo"
+          },
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "KANEO-2",
+      state: "In Progress",
+      title: "Claim active issue",
+      description: "Active refresh should retry failed claims",
+      labels: [],
+      assignee_id: nil,
+      assigned_to_worker: true
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    assert_receive {:kaneo_assign_issue, ^issue_id, "worker-1"}
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+    refute Process.alive?(agent_pid)
+
+    assert %{
+             attempt: 1,
+             identifier: "KANEO-2",
+             error: "assignment failed during active refresh: {:assignment_not_sticky, nil}"
+           } = updated_state.retry_attempts[issue_id]
+  end
+
+  test "reconcile does not apply Kaneo claim checks to non-Kaneo trackers" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "linear",
+      tracker_api_token: "linear-token",
+      tracker_project_slug: "project",
+      tracker_assignee: "me",
+      tracker_active_states: ["Todo", "In Progress", "In Review"]
+    )
+
+    issue_id = "issue-linear-refresh"
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: nil,
+          identifier: "LIN-1",
+          issue: %Issue{
+            id: issue_id,
+            identifier: "LIN-1",
+            state: "Todo",
+            assignee_id: "viewer-id",
+            assigned_to_worker: true
+          },
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "LIN-1",
+      state: "In Progress",
+      title: "Refresh Linear issue",
+      description: "Linear routing should not use Kaneo claim assignment",
+      labels: [],
+      assignee_id: "viewer-id",
+      assigned_to_worker: true
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert updated_state.running[issue_id].issue.state == "In Progress"
+    assert updated_state.retry_attempts == %{}
   end
 
   test "reconcile stops running issue when it is reassigned away from this worker" do

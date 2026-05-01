@@ -365,7 +365,7 @@ defmodule SymphonyElixir.Orchestrator do
         terminate_running_issue(state, issue.id, false)
 
       active_issue_state?(issue.state, active_states) ->
-        refresh_running_issue_state(state, issue)
+        refresh_running_claimed_issue_state(state, issue)
 
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
@@ -418,6 +418,40 @@ defmodule SymphonyElixir.Orchestrator do
       _ ->
         state
     end
+  end
+
+  defp refresh_running_claimed_issue_state(%State{} = state, %Issue{} = issue) do
+    case maybe_assign_issue_to_worker(issue) do
+      {:ok, %Issue{} = assigned_issue} ->
+        refresh_running_issue_state(state, assigned_issue)
+
+      {:skip, {:assigned_elsewhere, current_assignee}} ->
+        Logger.info("Issue no longer claimed by this worker: #{issue_context(issue)} assignee=#{inspect(current_assignee)}; stopping active agent")
+
+        terminate_running_issue(state, issue.id, false)
+
+      {:skip, reason} ->
+        retry_running_issue_after_assignment_failure(state, issue, reason)
+
+      {:error, reason} ->
+        retry_running_issue_after_assignment_failure(state, issue, reason)
+    end
+  end
+
+  defp retry_running_issue_after_assignment_failure(%State{} = state, %Issue{} = issue, reason) do
+    Logger.warning("Failed to keep issue assigned to worker during active refresh: #{issue_context(issue)} reason=#{inspect(reason)}; stopping active agent and retrying")
+
+    running_entry = Map.get(state.running, issue.id, %{})
+    next_attempt = next_retry_attempt_from_running(running_entry)
+
+    state
+    |> terminate_running_issue(issue.id, false)
+    |> schedule_issue_retry(issue.id, next_attempt, %{
+      identifier: issue.identifier,
+      error: "assignment failed during active refresh: #{inspect(reason)}",
+      worker_host: Map.get(running_entry, :worker_host),
+      workspace_path: Map.get(running_entry, :workspace_path)
+    })
   end
 
   defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
@@ -688,16 +722,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host) do
     recipient = self()
 
-    with {:ok, %Issue{} = issue} <- maybe_assign_issue_to_worker(issue) do
-      case select_worker_host(state, preferred_worker_host) do
-        :no_worker_capacity ->
-          Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
-          state
+    case maybe_assign_issue_to_worker(issue) do
+      {:ok, %Issue{} = issue} ->
+        case select_worker_host(state, preferred_worker_host) do
+          :no_worker_capacity ->
+            Logger.debug("No SSH worker slots available for #{issue_context(issue)} preferred_worker_host=#{inspect(preferred_worker_host)}")
+            state
 
-        worker_host ->
-          spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
-      end
-    else
+          worker_host ->
+            spawn_issue_on_worker_host(state, issue, attempt, recipient, worker_host)
+        end
+
       {:skip, reason} ->
         Logger.info("Skipping dispatch after assignment check for #{issue_context(issue)}: #{inspect(reason)}")
         state
@@ -1369,8 +1404,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp claim_issue_for_worker(issue, _assignee_id), do: {:ok, issue}
 
   defp configured_tracker_assignee do
-    Config.settings!().tracker.assignee
-    |> normalize_assignee_id()
+    case Config.settings!().tracker do
+      %{kind: "kaneo", assignee: assignee} -> normalize_assignee_id(assignee)
+      _ -> nil
+    end
   end
 
   defp normalize_assignee_id(value) when is_binary(value) do
