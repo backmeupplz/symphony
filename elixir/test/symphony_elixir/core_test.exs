@@ -1386,6 +1386,7 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Automated validation run:"
     assert prompt =~ "Manual QA for OpenClaw/humans:"
     assert prompt =~ "Manual QA: not required"
+    assert prompt =~ "If the right manual QA path is unknown"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end
@@ -1412,12 +1413,18 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Distinguish automated validation Symphony already ran from manual QA"
     assert prompt =~ "automated checks Symphony ran, with command/result evidence"
     assert prompt =~ "manual QA still required, or an explicit `Manual QA: not required`"
+    assert prompt =~ "bounded review guidance tied to the actual changed surface area"
+    assert prompt =~ "with unknowns called out"
+    assert prompt =~ "Do not turn this into a broad QA script."
     assert prompt =~ "The handoff should let OpenClaw or Nikita decide whether an"
 
     assert fixture =~ "Automated validation run by Symphony:"
     assert fixture =~ "`cd elixir && mix test test/symphony_elixir/core_test.exs:1354` passed"
     assert fixture =~ "Manual QA for OpenClaw/humans:"
-    assert fixture =~ "Required in Chrome against the Kaneo project board."
+    assert fixture =~ "Required in Chrome against the Kaneo project board only when the change modifies"
+    assert fixture =~ "Unknowns: no browser, Telegram, mobile, or device-specific QA path is implied"
+    assert fixture =~ "Review guidance:"
+    assert fixture =~ "Do not add unrelated manual testing steps"
     assert fixture =~ "Manual QA: not required for prompt-only/doc changes"
   end
 

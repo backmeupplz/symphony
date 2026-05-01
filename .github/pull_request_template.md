@@ -20,3 +20,9 @@
 
 - [ ] `make -C elixir all`
 - [ ] <!-- Additional targeted checks (list below) -->
+
+#### Testing Handoff
+
+- [ ] Automated validation: <!-- command(s) run plus result/evidence -->
+- [ ] Manual QA: <!-- required or not required; if required, include environment, path, expected result, and evidence; if not required, include rationale -->
+- [ ] Review guidance: <!-- bounded to changed surface area; call out unknowns instead of inventing QA steps -->

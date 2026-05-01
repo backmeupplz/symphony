@@ -223,6 +223,8 @@ Rules:
 - Keep `### Testing Handoff` current before moving to `in-review`.
 - Distinguish automated validation Symphony already ran from manual QA still needed from OpenClaw or humans.
 - If no manual QA is needed, say `Manual QA: not required` and give the reason plus automated validation evidence.
+- Suggest manual or integration checks only when they follow from the changed surface area and available context.
+- If the right manual QA path is unknown, say what is unknown and ask OpenClaw or humans to choose the relevant QA path instead of inventing steps.
 
 ### Step 2: implementation loop
 
@@ -255,6 +257,7 @@ Do not move a task to `in-review` unless all of the following are true:
 - the workpad and PR description/comment contain a concise `Testing` or `Validation` handoff that separates:
   - automated checks Symphony ran, with command/result evidence;
   - manual QA still required, or an explicit `Manual QA: not required` with rationale.
+  - bounded review guidance tied to the actual changed surface area, with unknowns called out.
 
 ## Manual QA handoff expectations
 
@@ -269,5 +272,8 @@ When a task needs browser/device/manual validation, make the handoff concrete. I
 When manual QA is not needed, the handoff must still say so explicitly and list the automated
 checks that are enough for review. The handoff should let OpenClaw or Nikita decide whether an
 `in-review` task can move to `done` without rereading the whole branch.
+
+Do not turn this into a broad QA script. Keep guidance lightweight, reviewer-oriented, and limited
+to what Symphony can justify from the code changes and task context.
 
 Keep issue text concise, specific, and reviewer-oriented.
