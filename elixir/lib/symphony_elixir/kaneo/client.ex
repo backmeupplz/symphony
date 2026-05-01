@@ -24,9 +24,8 @@ defmodule SymphonyElixir.Kaneo.Client do
     tracker = Config.settings!().tracker
 
     with :ok <- validate_tracker_config(tracker),
-         {:ok, assignee_filter} <- routing_assignee_filter(),
-         {:ok, issues} <- do_fetch_by_states(tracker.project_id, tracker.active_states, assignee_filter) do
-      {:ok, issues}
+         {:ok, assignee_filter} <- routing_assignee_filter() do
+      do_fetch_by_states(tracker.project_id, tracker.active_states, assignee_filter)
     end
   end
 
@@ -56,20 +55,7 @@ defmodule SymphonyElixir.Kaneo.Client do
     with {:ok, assignee_filter} <- routing_assignee_filter() do
       issue_ids
       |> Enum.uniq()
-      |> Enum.reduce_while({:ok, []}, fn
-        _issue_id, {:error, reason} ->
-          {:halt, {:error, reason}}
-
-        issue_id, {:ok, issues} ->
-          case get_task(issue_id, assignee_filter) do
-            {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-      end)
-      |> case do
-        {:ok, issues} -> {:ok, Enum.reverse(issues)}
-        {:error, reason} -> {:error, reason}
-      end
+      |> fetch_issue_states_by_ids(assignee_filter, [])
     end
   end
 
@@ -109,8 +95,8 @@ defmodule SymphonyElixir.Kaneo.Client do
         |> Keyword.put(:headers, headers)
         |> Keyword.put(:connect_options, timeout: 30_000)
 
-      path
-      |> build_url()
+      build_url(path)
+      |> then(&Req.new(url: &1))
       |> Req.request([method: method] ++ req_opts)
       |> case do
         {:ok, %{status: status} = response} when status in 200..299 ->
@@ -171,6 +157,15 @@ defmodule SymphonyElixir.Kaneo.Client do
         %Issue{} = issue -> {:ok, issue}
         nil -> {:error, :kaneo_unknown_payload}
       end
+    end
+  end
+
+  defp fetch_issue_states_by_ids([], _assignee_filter, issues), do: {:ok, Enum.reverse(issues)}
+
+  defp fetch_issue_states_by_ids([issue_id | rest], assignee_filter, issues) do
+    case get_task(issue_id, assignee_filter) do
+      {:ok, issue} -> fetch_issue_states_by_ids(rest, assignee_filter, [issue | issues])
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -299,8 +294,6 @@ defmodule SymphonyElixir.Kaneo.Client do
       normalized -> MapSet.member?(match_values, normalized)
     end
   end
-
-  defp assigned_to_worker?(_assignee_id, _assignee_filter), do: false
 
   defp routing_assignee_filter do
     case Config.settings!().tracker.assignee do
