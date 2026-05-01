@@ -307,6 +307,7 @@ async function telegramAutomation({chat, message, verifyText, send, timeoutMs}) 
   const startedAt = Date.now();
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const deadlineReached = () => Date.now() - startedAt > timeoutMs;
+  const normalizedChat = chat.startsWith("@") ? chat : "@" + chat;
   const visible = (element) => {
     if (!element) return false;
     const rect = element.getBoundingClientRect();
@@ -316,29 +317,24 @@ async function telegramAutomation({chat, message, verifyText, send, timeoutMs}) 
 
   const targetUrl = chat.startsWith("https://web.telegram.org/")
     ? chat
-    : "https://web.telegram.org/k/#" + encodeURIComponent(chat.startsWith("@") ? chat : "@" + chat);
+    : "https://web.telegram.org/k/#" + encodeURIComponent(normalizedChat);
 
   if (!location.href.includes("web.telegram.org")) {
     location.href = targetUrl;
-  } else if (location.href !== targetUrl && chat.includes("@")) {
+  } else if (location.href !== targetUrl && normalizedChat.includes("@")) {
     location.href = targetUrl;
   }
 
-  while (!deadlineReached()) {
-    const bodyText = document.body?.innerText || "";
+  await waitForAuthenticatedUi();
+  await openChatFromSearch(normalizedChat);
+  await clickStartIfPresent();
 
-    if (/Log in to Telegram|Scan QR code|Please choose your country|phone number/i.test(bodyText)) {
-      throw new Error("Telegram Web profile is not logged in");
-    }
+  let composer = findComposer();
 
-    if (findComposer()) {
-      break;
-    }
-
-    await sleep(250);
+  if (!composer) {
+    await waitFor(() => Boolean(findComposer()), "Telegram Web message composer");
+    composer = findComposer();
   }
-
-  const composer = findComposer();
 
   if (!composer) {
     throw new Error("Telegram Web message composer was not found");
@@ -348,9 +344,15 @@ async function telegramAutomation({chat, message, verifyText, send, timeoutMs}) 
 
   if (send) {
     composer.focus();
-    document.execCommand("selectAll", false, null);
-    document.execCommand("insertText", false, message);
-    composer.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: message}));
+
+    if (composer.isContentEditable) {
+      document.execCommand("selectAll", false, null);
+      document.execCommand("insertText", false, message);
+      composer.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: message}));
+    } else {
+      composer.textContent = message;
+      composer.dispatchEvent(new InputEvent("input", {bubbles: true, inputType: "insertText", data: message}));
+    }
 
     await waitFor(() => (document.body?.innerText || "").includes(message), "message text to appear in composer");
 
@@ -398,14 +400,80 @@ async function telegramAutomation({chat, message, verifyText, send, timeoutMs}) 
     throw new Error("Timed out waiting for " + label);
   }
 
+  async function waitForAuthenticatedUi() {
+    await waitFor(() => {
+      const bodyText = document.body?.innerText || "";
+
+      if (/Log in to Telegram|Scan QR code|Please choose your country|phone number/i.test(bodyText)) {
+        throw new Error("Telegram Web profile is not logged in");
+      }
+
+      return Boolean(document.querySelector('input.input-search-input') || findComposer());
+    }, "Telegram Web authenticated UI");
+  }
+
+  async function openChatFromSearch(targetHandle) {
+    if (location.href.includes(encodeURIComponent(targetHandle)) || location.href.includes(targetHandle)) {
+      return;
+    }
+
+    const searchInput = document.querySelector('input.input-search-input');
+
+    if (!visible(searchInput)) {
+      return;
+    }
+
+    searchInput.focus();
+    searchInput.click();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+
+    if (setter) {
+      setter.call(searchInput, targetHandle);
+    } else {
+      searchInput.value = targetHandle;
+    }
+
+    searchInput.dispatchEvent(new Event('input', {bubbles: true}));
+    await sleep(750);
+
+    const target = Array.from(document.querySelectorAll('a')).find((anchor) => {
+      return visible(anchor) && (anchor.innerText || anchor.textContent || '').includes(targetHandle);
+    });
+
+    if (!target) {
+      return;
+    }
+
+    for (const type of ['mouseover', 'mousedown', 'mouseup', 'click']) {
+      target.dispatchEvent(new MouseEvent(type, {bubbles: true, cancelable: true, view: window, button: 0, buttons: 1}));
+    }
+
+    await sleep(1500);
+  }
+
+  async function clickStartIfPresent() {
+    const startButton = Array.from(document.querySelectorAll('button')).find((button) => {
+      return visible(button) && /^START$/i.test((button.innerText || button.textContent || '').trim());
+    });
+
+    if (!startButton) {
+      return;
+    }
+
+    startButton.click();
+    await sleep(1500);
+  }
+
   function findComposer() {
-    const candidates = Array.from(document.querySelectorAll('[contenteditable="true"]'));
+    const selectors = ['.input-message-input', '[contenteditable="true"]', 'textarea'];
+    const candidates = selectors.flatMap((selector) => Array.from(document.querySelectorAll(selector)));
 
     return candidates.find((element) => {
       if (!visible(element)) return false;
       const label = [
         element.getAttribute("aria-label"),
         element.getAttribute("data-placeholder"),
+        element.getAttribute("placeholder"),
         element.textContent,
         element.className
       ].join(" ");
