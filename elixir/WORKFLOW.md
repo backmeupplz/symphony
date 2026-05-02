@@ -38,6 +38,30 @@ tracker:
           name: "Eggs Frontend Archive"
           repo_url: "https://github.com/BigWhaleLabs/eggs-frontend-archive"
           repo_ref: "main"
+    - id: "ewi8212k2fhccay7h0yvh5hs"
+      name: "Marketing"
+      slug: mkt
+      repo_url: "https://github.com/backmeupplz/marketing"
+      repo_ref: "main"
+      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
+      repos:
+        - key: notes
+          name: "Marketing Notes"
+          repo_url: "https://github.com/backmeupplz/marketing"
+          repo_ref: "main"
+          default: true
+        - key: profile
+          name: "GitHub Profile"
+          repo_url: "https://github.com/backmeupplz/backmeupplz"
+          repo_ref: "main"
+        - key: website
+          name: "borodutch.com"
+          repo_url: "https://github.com/backmeupplz/borodutch"
+          repo_ref: "main"
+        - key: stats
+          name: "borodutch.com stats"
+          repo_url: "https://github.com/backmeupplz/borodutch-stats"
+          repo_ref: "master"
   assignee: "$KANEO_ASSIGNEE"
   active_states:
     - to-do
@@ -51,24 +75,59 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    # Legacy example: git clone --depth 1 https://github.com/backmeupplz/symphony .
-    repo_url="${SOURCE_REPO_URL:-https://github.com/backmeupplz/symphony}"
-    repo_ref="${SOURCE_REPO_REF:-}"
-    git clone --depth 1 "$repo_url" .
-    if [ -n "$repo_ref" ]; then
-      git fetch --depth 1 origin "$repo_ref"
-      git checkout FETCH_HEAD
+    clone_repo() {
+      target="$1"
+      repo_url="$2"
+      repo_ref="${3:-}"
+      git clone --depth 1 "$repo_url" "$target"
+      if [ -n "$repo_ref" ]; then
+        git -C "$target" fetch --depth 1 origin "$repo_ref"
+        git -C "$target" checkout FETCH_HEAD
+      fi
+    }
+
+    bootstrap_repo() {
+      target="$1"
+      if [ -f "$target/elixir/mise.toml" ]; then
+        (cd "$target/elixir" && mise trust && mise install && mise exec -- mix deps.get)
+      fi
+
+      if [ -x "$target/.symphony/bootstrap.sh" ]; then
+        (cd "$target" && ./.symphony/bootstrap.sh)
+      elif [ -x "$target/scripts/symphony-bootstrap.sh" ]; then
+        (cd "$target" && ./scripts/symphony-bootstrap.sh)
+      fi
+    }
+
+    if [ -n "${SOURCE_REPOS_JSON:-}" ]; then
+      repo_count=$(python3 -c 'import json, os; print(len(json.loads(os.environ["SOURCE_REPOS_JSON"])))')
+    else
+      repo_count=0
     fi
 
-    if [ -f elixir/mise.toml ]; then
-      cd elixir && mise trust && mise install && mise exec -- mix deps.get
-      cd ..
-    fi
+    if [ "$repo_count" -gt 1 ]; then
+      mkdir -p repos
+      python3 -c 'import json, os, re; print("\n".join("\t".join([re.sub(r"[^A-Za-z0-9._-]+", "-", (repo.get("key") or repo.get("name") or "repo")).strip("-") or "repo", repo.get("repo_url") or "", repo.get("repo_ref") or ""]) for repo in json.loads(os.environ["SOURCE_REPOS_JSON"])))' > .symphony-repos.tsv
 
-    if [ -x .symphony/bootstrap.sh ]; then
-      ./.symphony/bootstrap.sh
-    elif [ -x scripts/symphony-bootstrap.sh ]; then
-      ./scripts/symphony-bootstrap.sh
+      while IFS="$(printf '\t')" read -r repo_key repo_url repo_ref; do
+        if [ -n "$repo_url" ]; then
+          clone_repo "repos/$repo_key" "$repo_url" "$repo_ref"
+          bootstrap_repo "repos/$repo_key"
+        fi
+      done < .symphony-repos.tsv
+
+      {
+        echo "# Selected repos"
+        echo
+        while IFS="$(printf '\t')" read -r repo_key repo_url repo_ref; do
+          echo "- \`repos/$repo_key\` -> $repo_url ${repo_ref:+($repo_ref)}"
+        done < .symphony-repos.tsv
+      } > REPOS.md
+    else
+      repo_url="${SOURCE_REPO_URL:-https://github.com/backmeupplz/symphony}"
+      repo_ref="${SOURCE_REPO_REF:-}"
+      clone_repo . "$repo_url" "$repo_ref"
+      bootstrap_repo .
     fi
   before_remove: |
     if [ -f elixir/mix.exs ]; then
@@ -117,12 +176,14 @@ Nikita runs many projects across many repos. This Symphony runner can monitor a 
 - `SOURCE_REPO_REF` is optional when a non-default branch or ref should be the base.
 
 In multi-project mode, each configured Kaneo project supplies its repo routing. A project may define
-multiple repos. Tasks can select one with `SOURCE_REPO_KEY=<key>` / `repo_key: <key>` or with an
-explicit `SOURCE_REPO_URL=<url>`. The runner injects `KANEO_PROJECT_ID`, `SOURCE_REPO_KEY`,
-`SOURCE_REPO_URL`, `SOURCE_REPO_REF`, and `SYMPHONY_WORKFLOW_FILE` into workspace hooks for the
-specific task being executed.
+multiple repos. Tasks can select one with `SOURCE_REPO_KEY=<key>` / `repo_key: <key>`, select several
+with `SOURCE_REPO_KEYS=<key>,<key>` / `repo_keys: <key>,<key>`, or provide an explicit
+`SOURCE_REPO_URL=<url>`. If no repo is specified, the runner infers repo keys from the task title and
+description, then falls back to the project default. The runner injects `KANEO_PROJECT_ID`,
+`SOURCE_REPO_KEY`, `SOURCE_REPO_URL`, `SOURCE_REPO_REF`, `SOURCE_REPOS_JSON`, and
+`SYMPHONY_WORKFLOW_FILE` into workspace hooks for the specific task being executed.
 
-Be fluent about the broader portfolio, but only modify the repository cloned for this run. If the Kaneo task clearly refers to a different repo than the cloned one, stop, leave a concise blocker note in the workpad, and do not make speculative changes.
+Be fluent about the broader portfolio, but only modify the repository or repositories cloned for this run. If the Kaneo task clearly refers to a different repo than the cloned workspace, stop, leave a concise blocker note in the workpad, and do not make speculative changes.
 
 ## Kaneo board contract
 

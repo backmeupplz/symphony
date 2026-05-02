@@ -178,7 +178,8 @@ defmodule SymphonyElixirWeb.Presenter do
       tracker_identifier: Map.get(entry, :tracker_identifier),
       source_repo_key: Map.get(entry, :source_repo_key),
       source_repo_url: Map.get(entry, :source_repo_url),
-      source_repo_ref: Map.get(entry, :source_repo_ref)
+      source_repo_ref: Map.get(entry, :source_repo_ref),
+      source_repos: Map.get(entry, :source_repos)
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()

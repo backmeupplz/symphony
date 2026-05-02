@@ -74,7 +74,76 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert issue.source_repo_key == "frontend"
     assert issue.source_repo_url == "git@example.com:alpha/frontend.git"
     assert issue.source_repo_ref == "feature/task-branch"
+
+    assert issue.source_repos == [
+             %{
+               "key" => "frontend",
+               "name" => nil,
+               "repo_url" => "git@example.com:alpha/frontend.git",
+               "repo_ref" => "feature/task-branch",
+               "workflow_file" => "/opt/frontend/WORKFLOW.md"
+             }
+           ]
+
     assert issue.workflow_file == "/opt/frontend/WORKFLOW.md"
+  end
+
+  test "normalizes Kaneo tasks that select multiple project repos" do
+    issue =
+      KaneoClient.normalize_task_for_test(
+        %{
+          "id" => "task-1",
+          "number" => 8,
+          "title" => "Update backend and frontend",
+          "description" => "SOURCE_REPO_KEYS=backend,frontend",
+          "status" => "to-do",
+          "projectId" => "project-a"
+        },
+        %{
+          id: "project-a",
+          slug: "alpha",
+          repo_ref: "main",
+          repos: [
+            %{key: "backend", name: "Backend", repo_url: "git@example.com:alpha/backend.git", default: true},
+            %{key: "frontend", name: "Frontend", repo_url: "git@example.com:alpha/frontend.git"},
+            %{key: "docs", name: "Docs", repo_url: "git@example.com:alpha/docs.git"}
+          ]
+        }
+      )
+
+    assert issue.source_repo_key == "backend"
+    assert issue.source_repo_url == "git@example.com:alpha/backend.git"
+
+    assert Enum.map(issue.source_repos, & &1["key"]) == ["backend", "frontend"]
+
+    assert Enum.map(issue.source_repos, & &1["repo_url"]) == [
+             "git@example.com:alpha/backend.git",
+             "git@example.com:alpha/frontend.git"
+           ]
+  end
+
+  test "infers Kaneo project repos from task text when no explicit repo is set" do
+    issue =
+      KaneoClient.normalize_task_for_test(
+        %{
+          "id" => "task-1",
+          "number" => 9,
+          "title" => "Frontend archive cleanup",
+          "description" => "Use archive only.",
+          "status" => "to-do",
+          "projectId" => "project-a"
+        },
+        %{
+          id: "project-a",
+          slug: "alpha",
+          repos: [
+            %{key: "backend", repo_url: "git@example.com:alpha/backend.git", default: true},
+            %{key: "frontend-archive", name: "Frontend Archive", repo_url: "git@example.com:alpha/frontend-archive.git"}
+          ]
+        }
+      )
+
+    assert Enum.map(issue.source_repos, & &1["key"]) == ["frontend-archive"]
   end
 
   test "fetches candidate issues from multiple configured Kaneo projects" do

@@ -479,10 +479,16 @@ defmodule SymphonyElixir.Workspace do
       {"SOURCE_REPO_KEY", Map.get(issue_context, :source_repo_key)},
       {"SOURCE_REPO_URL", Map.get(issue_context, :source_repo_url)},
       {"SOURCE_REPO_REF", Map.get(issue_context, :source_repo_ref)},
+      {"SOURCE_REPOS_JSON", source_repos_json(Map.get(issue_context, :source_repos))},
       {"SYMPHONY_WORKFLOW_FILE", Map.get(issue_context, :workflow_file)}
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
   end
+
+  defp source_repos_json(nil), do: nil
+  defp source_repos_json([]), do: nil
+  defp source_repos_json(source_repos) when is_list(source_repos), do: Jason.encode!(source_repos)
+  defp source_repos_json(_source_repos), do: nil
 
   defp remote_hook_env_exports(issue_context) when is_map(issue_context) do
     issue_context
@@ -490,18 +496,20 @@ defmodule SymphonyElixir.Workspace do
     |> Enum.map_join("\n", fn {key, value} -> "export #{key}=#{shell_escape(value)}" end)
   end
 
-  defp issue_context(%{
-         id: issue_id,
-         identifier: identifier,
-         project_id: project_id,
-         project_name: project_name,
-         project_slug: project_slug,
-         project_key: project_key,
-         source_repo_key: source_repo_key,
-         source_repo_url: source_repo_url,
-         source_repo_ref: source_repo_ref,
-         workflow_file: workflow_file
-       }) do
+  defp issue_context(
+         %{
+           id: issue_id,
+           identifier: identifier,
+           project_id: project_id,
+           project_name: project_name,
+           project_slug: project_slug,
+           project_key: project_key,
+           source_repo_key: source_repo_key,
+           source_repo_url: source_repo_url,
+           source_repo_ref: source_repo_ref,
+           workflow_file: workflow_file
+         } = issue
+       ) do
     %{
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
@@ -512,6 +520,7 @@ defmodule SymphonyElixir.Workspace do
       source_repo_key: source_repo_key,
       source_repo_url: source_repo_url,
       source_repo_ref: source_repo_ref,
+      source_repos: Map.get(issue, :source_repos),
       workflow_file: workflow_file
     }
   end

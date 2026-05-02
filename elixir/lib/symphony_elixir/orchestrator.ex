@@ -1204,6 +1204,7 @@ defmodule SymphonyElixir.Orchestrator do
           source_repo_key: metadata.issue.source_repo_key,
           source_repo_url: metadata.issue.source_repo_url,
           source_repo_ref: metadata.issue.source_repo_ref,
+          source_repos: metadata.issue.source_repos,
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),

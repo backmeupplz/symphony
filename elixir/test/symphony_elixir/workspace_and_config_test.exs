@@ -66,7 +66,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
         workspace_root: workspace_root,
-        hook_after_create: "printf '%s\\n' \"$KANEO_PROJECT_ID\" > project.txt && printf '%s\\n' \"$SOURCE_REPO_URL\" > repo.txt && printf '%s\\n' \"$SOURCE_REPO_REF\" > ref.txt"
+        hook_after_create:
+          "printf '%s\\n' \"$KANEO_PROJECT_ID\" > project.txt && printf '%s\\n' \"$SOURCE_REPO_URL\" > repo.txt && printf '%s\\n' \"$SOURCE_REPO_REF\" > ref.txt && printf '%s\\n' \"$SOURCE_REPOS_JSON\" > repos.json"
       )
 
       issue = %Issue{
@@ -77,7 +78,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
         project_slug: "alpha",
         project_key: "ALPHA",
         source_repo_url: "git@example.com:alpha/repo.git",
-        source_repo_ref: "main"
+        source_repo_ref: "main",
+        source_repos: [
+          %{
+            "key" => "backend",
+            "repo_url" => "git@example.com:alpha/repo.git",
+            "repo_ref" => "main"
+          }
+        ]
       }
 
       assert {:ok, workspace} = Workspace.create_for_issue(issue)
@@ -85,6 +93,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       assert File.read!(Path.join(workspace, "project.txt")) == "project-alpha\n"
       assert File.read!(Path.join(workspace, "repo.txt")) == "git@example.com:alpha/repo.git\n"
       assert File.read!(Path.join(workspace, "ref.txt")) == "main\n"
+
+      assert Jason.decode!(File.read!(Path.join(workspace, "repos.json"))) == [
+               %{
+                 "key" => "backend",
+                 "repo_url" => "git@example.com:alpha/repo.git",
+                 "repo_ref" => "main"
+               }
+             ]
     after
       File.rm_rf(workspace_root)
     end

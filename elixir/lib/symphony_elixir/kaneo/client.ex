@@ -279,7 +279,8 @@ defmodule SymphonyElixir.Kaneo.Client do
       task_field(task, "userId") || get_in(task, ["assignee", "id"]) || get_in(task, [:assignee, :id])
 
     project = normalize_project_context(task, project)
-    selected_repo = select_project_repo(task, project.repos)
+    selected_repos = select_project_repos(task, project)
+    primary_repo = List.first(selected_repos)
     tracker_identifier = task_identifier(task)
 
     %Issue{
@@ -297,10 +298,11 @@ defmodule SymphonyElixir.Kaneo.Client do
       project_slug: project.slug,
       project_key: project.key,
       tracker_identifier: tracker_identifier,
-      source_repo_key: task_source_repo_key(task) || repo_value(selected_repo, "key"),
-      source_repo_url: task_source_repo_url(task) || repo_value(selected_repo, "repo_url") || project.repo_url,
-      source_repo_ref: task_source_repo_ref(task) || repo_value(selected_repo, "repo_ref") || project.repo_ref,
-      workflow_file: task_workflow_file(task) || repo_value(selected_repo, "workflow_file") || project.workflow_file,
+      source_repo_key: repo_value(primary_repo, "key"),
+      source_repo_url: repo_value(primary_repo, "repo_url"),
+      source_repo_ref: repo_value(primary_repo, "repo_ref"),
+      source_repos: selected_repos,
+      workflow_file: repo_value(primary_repo, "workflow_file") || project.workflow_file,
       blocked_by: [],
       labels: [],
       assigned_to_worker: assigned_to_worker?(assignee_id, project.assignee_filter),
@@ -381,23 +383,117 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp issue_identifier(identifier, _project), do: identifier
 
   defp task_source_repo_key(task), do: task_routing_value(task, ["source_repo_key", "repo_key", "repo_slug"])
+  defp task_source_repo_keys(task), do: task_routing_value(task, ["source_repo_keys", "repo_keys", "repo_slugs"])
   defp task_source_repo_url(task), do: task_routing_value(task, ["source_repo_url", "repo_url", "repo"])
   defp task_source_repo_ref(task), do: task_routing_value(task, ["source_repo_ref", "repo_ref", "ref"])
   defp task_workflow_file(task), do: task_routing_value(task, ["workflow_file", "workflow"])
 
-  defp select_project_repo(task, repos) when is_list(repos) do
-    requested_key = task_source_repo_key(task) |> normalize_repo_key()
+  defp select_project_repos(task, project) do
+    repos = project.repos || []
+    explicit_url = task_source_repo_url(task)
 
-    cond do
-      is_binary(requested_key) ->
-        Enum.find(repos, &(repo_value(&1, "key") |> normalize_repo_key() == requested_key))
+    selected_repos =
+      cond do
+        is_binary(explicit_url) ->
+          [repo_for_explicit_url(task, project)]
 
-      true ->
-        Enum.find(repos, &(repo_value(&1, "default") == true)) || List.first(repos)
-    end
+        requested_repo_keys(task) != [] ->
+          select_requested_repos(repos, requested_repo_keys(task))
+
+        true ->
+          inferred_repos = infer_repos_from_task_text(task, repos)
+
+          case inferred_repos do
+            [] -> [Enum.find(repos, &(repo_value(&1, "default") == true)) || List.first(repos) || repo_for_project(task, project)]
+            inferred_repos -> inferred_repos
+          end
+      end
+
+    selected_repos
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&normalize_selected_repo(&1, task, project))
+    |> Enum.reject(&(repo_value(&1, "repo_url") == nil))
   end
 
-  defp select_project_repo(_task, _repos), do: nil
+  defp repo_for_explicit_url(task, project) do
+    %{
+      "key" => task_source_repo_key(task),
+      "repo_url" => task_source_repo_url(task) || project.repo_url,
+      "repo_ref" => task_source_repo_ref(task) || project.repo_ref,
+      "workflow_file" => task_workflow_file(task) || project.workflow_file
+    }
+  end
+
+  defp repo_for_project(task, project) do
+    %{
+      "repo_url" => project.repo_url,
+      "repo_ref" => task_source_repo_ref(task) || project.repo_ref,
+      "workflow_file" => task_workflow_file(task) || project.workflow_file
+    }
+  end
+
+  defp requested_repo_keys(task) do
+    [task_source_repo_key(task) | split_repo_keys(task_source_repo_keys(task))]
+    |> Enum.map(&normalize_repo_key/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp split_repo_keys(value) when is_binary(value) do
+    value
+    |> String.split([",", "\n", "\t", " "], trim: true)
+  end
+
+  defp split_repo_keys(_value), do: []
+
+  defp select_requested_repos(repos, requested_keys) when is_list(repos) do
+    Enum.flat_map(requested_keys, fn requested_key ->
+      repos
+      |> Enum.find(&(repo_value(&1, "key") |> normalize_repo_key() == requested_key))
+      |> List.wrap()
+    end)
+  end
+
+  defp infer_repos_from_task_text(task, repos) when is_list(repos) do
+    task_text =
+      [task_field(task, "title"), task_field(task, "description")]
+      |> Enum.filter(&is_binary/1)
+      |> Enum.join("\n")
+      |> String.downcase()
+
+    Enum.filter(repos, fn repo ->
+      repo_key = repo_value(repo, "key")
+      repo_name = repo_value(repo, "name")
+
+      Enum.any?([repo_key, repo_name], fn value ->
+        case normalize_repo_search_term(value) do
+          nil -> false
+          term -> String.contains?(task_text, term)
+        end
+      end)
+    end)
+  end
+
+  defp infer_repos_from_task_text(_task, _repos), do: []
+
+  defp normalize_repo_search_term(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> blank_to_nil()
+  end
+
+  defp normalize_repo_search_term(_value), do: nil
+
+  defp normalize_selected_repo(repo, task, project) do
+    %{
+      "key" => repo_value(repo, "key"),
+      "name" => repo_value(repo, "name"),
+      "repo_url" => repo_value(repo, "repo_url") || project.repo_url,
+      "repo_ref" => task_source_repo_ref(task) || repo_value(repo, "repo_ref") || project.repo_ref,
+      "workflow_file" => task_workflow_file(task) || repo_value(repo, "workflow_file") || project.workflow_file
+    }
+  end
 
   defp repo_value(repo, key) when is_map(repo) and is_binary(key) do
     Map.get(repo, key) || Map.get(repo, String.to_atom(key))
