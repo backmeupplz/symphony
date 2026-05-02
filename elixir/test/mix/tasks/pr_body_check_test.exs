@@ -316,6 +316,85 @@ defmodule Mix.Tasks.PrBody.CheckTest do
     end)
   end
 
+  test "repository PR template requires testing handoff checkboxes" do
+    template = File.read!(Path.expand("../../../../.github/pull_request_template.md", __DIR__))
+
+    assert template =~ "#### Testing Handoff"
+    assert template =~ "Automated validation:"
+    assert template =~ "Manual QA:"
+    assert template =~ "Review guidance:"
+    assert template =~ "call out unknowns instead of inventing QA steps"
+  end
+
+  test "validates PR bodies with testing handoff details" do
+    in_temp_repo(fn ->
+      write_template!("""
+      #### Context
+
+      <!-- Why is this change needed? -->
+
+      #### TL;DR
+
+      *<!-- A short summary -->*
+
+      #### Summary
+
+      - <!-- Summary bullet -->
+
+      #### Alternatives
+
+      - <!-- Alternative bullet -->
+
+      #### Test Plan
+
+      - [ ] <!-- Test checkbox -->
+
+      #### Testing Handoff
+
+      - [ ] Automated validation: <!-- command plus result/evidence -->
+      - [ ] Manual QA: <!-- required or not required -->
+      - [ ] Review guidance: <!-- bounded guidance -->
+      """)
+
+      valid_body = """
+      #### Context
+
+      Handoff guidance needs to be reviewable.
+
+      #### TL;DR
+
+      Add a required testing handoff.
+
+      #### Summary
+
+      - Adds the testing handoff section to PR descriptions.
+
+      #### Alternatives
+
+      - Keep guidance only in Kaneo workpads.
+
+      #### Test Plan
+
+      - [x] `mix test test/mix/tasks/pr_body_check_test.exs`
+
+      #### Testing Handoff
+
+      - [x] Automated validation: `mix test test/mix/tasks/pr_body_check_test.exs` passed.
+      - [x] Manual QA: not required for PR-template lint coverage; automated tests cover the behavior.
+      - [x] Review guidance: check only PR/workpad handoff text; no browser or device QA is implied.
+      """
+
+      File.write!("body.md", valid_body)
+
+      output =
+        capture_io(fn ->
+          Check.run(["lint", "--file", "body.md"])
+        end)
+
+      assert output =~ "PR body format OK"
+    end)
+  end
+
   defp in_temp_repo(fun) do
     unique = System.unique_integer([:positive, :monotonic])
     root = Path.join(System.tmp_dir!(), "validate-pr-body-task-test-#{unique}")
