@@ -75,6 +75,8 @@ Pass a custom workflow file path to `./bin/symphony` when starting the service:
 
 If no path is passed, Symphony defaults to `./WORKFLOW.md`.
 
+Keep machine- or organization-specific project lists in a local workflow file outside the checked-out Symphony repo, for example `~/.config/symphony/WORKFLOW.md`. The in-repo `WORKFLOW.md` is intended as a reusable template.
+
 Optional flags:
 
 - `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)

@@ -1,73 +1,9 @@
 ---
 tracker:
   kind: kaneo
-  endpoint: "https://kaneo.icefish-betta.ts.net/api"
+  endpoint: "https://cloud.kaneo.app/api"
   api_key: "$KANEO_API_KEY"
-  projects:
-    - id: "o6t18forxgspr6lj6lc3chz1"
-      slug: sym
-      repo_url: "https://github.com/backmeupplz/symphony"
-      repo_ref: "main"
-      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
-    - id: "ewttjw85y3ycpjpsqwwm5qwi"
-      slug: voi
-      repo_url: "https://github.com/backmeupplz/voicy"
-      repo_ref: "main"
-      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
-    - id: "vda4cor2pugbu4rt95lmhmye"
-      name: "Eggs"
-      slug: egg
-      repo_url: "https://github.com/BigWhaleLabs/eggs-backend"
-      repo_ref: "main"
-      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
-      repos:
-        - key: backend
-          name: "Eggs Backend"
-          repo_url: "https://github.com/BigWhaleLabs/eggs-backend"
-          repo_ref: "main"
-          default: true
-        - key: frontend
-          name: "Eggs Frontend"
-          repo_url: "https://github.com/BigWhaleLabs/eggs-frontend"
-          repo_ref: "main"
-        - key: backend-archive
-          name: "Eggs Backend Archive"
-          repo_url: "https://github.com/BigWhaleLabs/eggs-backend-archive"
-          repo_ref: "main"
-        - key: frontend-archive
-          name: "Eggs Frontend Archive"
-          repo_url: "https://github.com/BigWhaleLabs/eggs-frontend-archive"
-          repo_ref: "main"
-    - id: "ewi8212k2fhccay7h0yvh5hs"
-      name: "Marketing"
-      slug: mkt
-      repo_url: "https://github.com/backmeupplz/marketing"
-      repo_ref: "main"
-      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
-      repos:
-        - key: notes
-          name: "Marketing Notes"
-          repo_url: "https://github.com/backmeupplz/marketing"
-          repo_ref: "main"
-          default: true
-        - key: profile
-          name: "GitHub Profile"
-          repo_url: "https://github.com/backmeupplz/backmeupplz"
-          repo_ref: "main"
-        - key: website
-          name: "borodutch.com"
-          repo_url: "https://github.com/backmeupplz/borodutch"
-          repo_ref: "main"
-        - key: stats
-          name: "borodutch.com stats"
-          repo_url: "https://github.com/backmeupplz/borodutch-stats"
-          repo_ref: "master"
-    - id: "luw130255z9zfh5vfwb3cpgh"
-      name: "MyGround"
-      slug: myg
-      repo_url: "https://github.com/backmeupplz/myground"
-      repo_ref: "master"
-      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
+  project_id: "$KANEO_PROJECT_ID"
   assignee: "$KANEO_ASSIGNEE"
   active_states:
     - to-do
@@ -130,7 +66,7 @@ hooks:
         done < .symphony-repos.tsv
       } > REPOS.md
     else
-      repo_url="${SOURCE_REPO_URL:-https://github.com/backmeupplz/symphony}"
+      repo_url="${SOURCE_REPO_URL:?missing SOURCE_REPO_URL}"
       repo_ref="${SOURCE_REPO_REF:-}"
       clone_repo . "$repo_url" "$repo_ref"
       bootstrap_repo .
