@@ -279,6 +279,7 @@ defmodule SymphonyElixir.Kaneo.Client do
       task_field(task, "userId") || get_in(task, ["assignee", "id"]) || get_in(task, [:assignee, :id])
 
     project = normalize_project_context(task, project)
+    selected_repo = select_project_repo(task, project.repos)
     tracker_identifier = task_identifier(task)
 
     %Issue{
@@ -296,9 +297,10 @@ defmodule SymphonyElixir.Kaneo.Client do
       project_slug: project.slug,
       project_key: project.key,
       tracker_identifier: tracker_identifier,
-      source_repo_url: task_source_repo_url(task) || project.repo_url,
-      source_repo_ref: task_source_repo_ref(task) || project.repo_ref,
-      workflow_file: task_workflow_file(task) || project.workflow_file,
+      source_repo_key: task_source_repo_key(task) || repo_value(selected_repo, "key"),
+      source_repo_url: task_source_repo_url(task) || repo_value(selected_repo, "repo_url") || project.repo_url,
+      source_repo_ref: task_source_repo_ref(task) || repo_value(selected_repo, "repo_ref") || project.repo_ref,
+      workflow_file: task_workflow_file(task) || repo_value(selected_repo, "workflow_file") || project.workflow_file,
       blocked_by: [],
       labels: [],
       assigned_to_worker: assigned_to_worker?(assignee_id, project.assignee_filter),
@@ -335,6 +337,7 @@ defmodule SymphonyElixir.Kaneo.Client do
       key: project_key,
       repo_url: blank_to_nil(project_value(project, :repo_url)),
       repo_ref: blank_to_nil(project_value(project, :repo_ref)),
+      repos: project_value(project, :repos) || [],
       workflow_file: blank_to_nil(project_value(project, :workflow_file)),
       assignee_filter: assignee_filter(assignee)
     }
@@ -377,9 +380,39 @@ defmodule SymphonyElixir.Kaneo.Client do
 
   defp issue_identifier(identifier, _project), do: identifier
 
+  defp task_source_repo_key(task), do: task_routing_value(task, ["source_repo_key", "repo_key", "repo_slug"])
   defp task_source_repo_url(task), do: task_routing_value(task, ["source_repo_url", "repo_url", "repo"])
   defp task_source_repo_ref(task), do: task_routing_value(task, ["source_repo_ref", "repo_ref", "ref"])
   defp task_workflow_file(task), do: task_routing_value(task, ["workflow_file", "workflow"])
+
+  defp select_project_repo(task, repos) when is_list(repos) do
+    requested_key = task_source_repo_key(task) |> normalize_repo_key()
+
+    cond do
+      is_binary(requested_key) ->
+        Enum.find(repos, &(repo_value(&1, "key") |> normalize_repo_key() == requested_key))
+
+      true ->
+        Enum.find(repos, &(repo_value(&1, "default") == true)) || List.first(repos)
+    end
+  end
+
+  defp select_project_repo(_task, _repos), do: nil
+
+  defp repo_value(repo, key) when is_map(repo) and is_binary(key) do
+    Map.get(repo, key) || Map.get(repo, String.to_atom(key))
+  end
+
+  defp repo_value(_repo, _key), do: nil
+
+  defp normalize_repo_key(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> String.downcase()
+    |> blank_to_nil()
+  end
+
+  defp normalize_repo_key(_value), do: nil
 
   defp task_routing_value(task, keys) when is_map(task) and is_list(keys) do
     Enum.find_value(keys, fn key ->

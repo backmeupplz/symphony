@@ -176,6 +176,7 @@ defmodule SymphonyElixirWeb.Presenter do
       project_slug: Map.get(entry, :project_slug),
       project_key: Map.get(entry, :project_key),
       tracker_identifier: Map.get(entry, :tracker_identifier),
+      source_repo_key: Map.get(entry, :source_repo_key),
       source_repo_url: Map.get(entry, :source_repo_url),
       source_repo_ref: Map.get(entry, :source_repo_ref)
     }

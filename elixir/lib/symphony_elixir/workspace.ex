@@ -476,6 +476,7 @@ defmodule SymphonyElixir.Workspace do
       {"KANEO_PROJECT_KEY", Map.get(issue_context, :project_key)},
       {"KANEO_TASK_ID", Map.get(issue_context, :issue_id)},
       {"KANEO_TASK_IDENTIFIER", Map.get(issue_context, :issue_identifier)},
+      {"SOURCE_REPO_KEY", Map.get(issue_context, :source_repo_key)},
       {"SOURCE_REPO_URL", Map.get(issue_context, :source_repo_url)},
       {"SOURCE_REPO_REF", Map.get(issue_context, :source_repo_ref)},
       {"SYMPHONY_WORKFLOW_FILE", Map.get(issue_context, :workflow_file)}
@@ -496,6 +497,7 @@ defmodule SymphonyElixir.Workspace do
          project_name: project_name,
          project_slug: project_slug,
          project_key: project_key,
+         source_repo_key: source_repo_key,
          source_repo_url: source_repo_url,
          source_repo_ref: source_repo_ref,
          workflow_file: workflow_file
@@ -507,6 +509,7 @@ defmodule SymphonyElixir.Workspace do
       project_name: project_name,
       project_slug: project_slug,
       project_key: project_key,
+      source_repo_key: source_repo_key,
       source_repo_url: source_repo_url,
       source_repo_ref: source_repo_ref,
       workflow_file: workflow_file
@@ -521,6 +524,7 @@ defmodule SymphonyElixir.Workspace do
       project_name: nil,
       project_slug: nil,
       project_key: nil,
+      source_repo_key: nil,
       source_repo_url: nil,
       source_repo_ref: nil,
       workflow_file: nil
@@ -535,6 +539,7 @@ defmodule SymphonyElixir.Workspace do
       project_name: nil,
       project_slug: nil,
       project_key: nil,
+      source_repo_key: nil,
       source_repo_url: nil,
       source_repo_ref: nil,
       workflow_file: nil
@@ -549,6 +554,7 @@ defmodule SymphonyElixir.Workspace do
       project_name: nil,
       project_slug: nil,
       project_key: nil,
+      source_repo_key: nil,
       source_repo_url: nil,
       source_repo_ref: nil,
       workflow_file: nil

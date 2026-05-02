@@ -3,15 +3,41 @@ tracker:
   kind: kaneo
   endpoint: "https://kaneo.icefish-betta.ts.net/api"
   api_key: "$KANEO_API_KEY"
-  # Legacy single-project mode. For portfolio mode, prefer `projects` below and
-  # omit `project_id` so the runner can poll every configured Kaneo project.
-  project_id: "$KANEO_PROJECT_ID"
-  # projects:
-  #   - id: "$KANEO_PROJECT_ID"
-  #     slug: sym
-  #     repo_url: "$SOURCE_REPO_URL"
-  #     repo_ref: "$SOURCE_REPO_REF"
-  #     workflow_file: "./elixir/WORKFLOW.md"
+  projects:
+    - id: "o6t18forxgspr6lj6lc3chz1"
+      slug: sym
+      repo_url: "https://github.com/backmeupplz/symphony"
+      repo_ref: "main"
+      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
+    - id: "ewttjw85y3ycpjpsqwwm5qwi"
+      slug: voi
+      repo_url: "https://github.com/backmeupplz/voicy"
+      repo_ref: "main"
+      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
+    - id: "vda4cor2pugbu4rt95lmhmye"
+      name: "Eggs"
+      slug: egg
+      repo_url: "https://github.com/BigWhaleLabs/eggs-backend"
+      repo_ref: "main"
+      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
+      repos:
+        - key: backend
+          name: "Eggs Backend"
+          repo_url: "https://github.com/BigWhaleLabs/eggs-backend"
+          repo_ref: "main"
+          default: true
+        - key: frontend
+          name: "Eggs Frontend"
+          repo_url: "https://github.com/BigWhaleLabs/eggs-frontend"
+          repo_ref: "main"
+        - key: backend-archive
+          name: "Eggs Backend Archive"
+          repo_url: "https://github.com/BigWhaleLabs/eggs-backend-archive"
+          repo_ref: "main"
+        - key: frontend-archive
+          name: "Eggs Frontend Archive"
+          repo_url: "https://github.com/BigWhaleLabs/eggs-frontend-archive"
+          repo_ref: "main"
   assignee: "$KANEO_ASSIGNEE"
   active_states:
     - to-do
@@ -86,12 +112,15 @@ Continuation context:
 Nikita runs many projects across many repos. This Symphony runner can monitor a portfolio through
 `tracker.projects` in `WORKFLOW.md`. In legacy single-project mode:
 - `KANEO_PROJECT_ID` selects the Kaneo project.
+- `SOURCE_REPO_KEY` names the configured repo inside a multi-repo project when one is selected.
 - `SOURCE_REPO_URL` selects the repository to clone.
 - `SOURCE_REPO_REF` is optional when a non-default branch or ref should be the base.
 
-In multi-project mode, each configured Kaneo project supplies its repo routing. The runner injects
-`KANEO_PROJECT_ID`, `SOURCE_REPO_URL`, `SOURCE_REPO_REF`, and `SYMPHONY_WORKFLOW_FILE` into workspace
-hooks for the specific task being executed.
+In multi-project mode, each configured Kaneo project supplies its repo routing. A project may define
+multiple repos. Tasks can select one with `SOURCE_REPO_KEY=<key>` / `repo_key: <key>` or with an
+explicit `SOURCE_REPO_URL=<url>`. The runner injects `KANEO_PROJECT_ID`, `SOURCE_REPO_KEY`,
+`SOURCE_REPO_URL`, `SOURCE_REPO_REF`, and `SYMPHONY_WORKFLOW_FILE` into workspace hooks for the
+specific task being executed.
 
 Be fluent about the broader portfolio, but only modify the repository cloned for this run. If the Kaneo task clearly refers to a different repo than the cloned one, stop, leave a concise blocker note in the workpad, and do not make speculative changes.
 

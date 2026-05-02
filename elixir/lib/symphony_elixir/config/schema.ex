@@ -55,6 +55,7 @@ defmodule SymphonyElixir.Config.Schema do
         field(:slug, :string)
         field(:repo_url, :string)
         field(:repo_ref, :string)
+        field(:repos, {:array, :map})
         field(:workflow_file, :string)
         field(:assignee, :string)
         field(:active_states, {:array, :string})
@@ -70,6 +71,7 @@ defmodule SymphonyElixir.Config.Schema do
           :slug,
           :repo_url,
           :repo_ref,
+          :repos,
           :workflow_file,
           :assignee,
           :active_states,
@@ -455,6 +457,7 @@ defmodule SymphonyElixir.Config.Schema do
       project
       | repo_url: resolve_secret_setting(project.repo_url, nil),
         repo_ref: resolve_secret_setting(project.repo_ref, nil),
+        repos: normalize_kaneo_project_repos(project.repos),
         workflow_file: resolve_path_value(project.workflow_file, nil),
         assignee: resolve_secret_setting(project.assignee, tracker.assignee),
         active_states: default_project_states(project.active_states, tracker.active_states),
@@ -462,8 +465,43 @@ defmodule SymphonyElixir.Config.Schema do
     }
   end
 
+  defp normalize_kaneo_project_repos(nil), do: nil
+
+  defp normalize_kaneo_project_repos(repos) when is_list(repos) do
+    repos
+    |> Enum.map(&normalize_kaneo_project_repo/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp normalize_kaneo_project_repos(_repos), do: nil
+
+  defp normalize_kaneo_project_repo(repo) when is_map(repo) do
+    repo = normalize_keys(repo)
+
+    %{
+      "key" => blank_to_nil(Map.get(repo, "key") || Map.get(repo, "slug") || Map.get(repo, "name")),
+      "name" => blank_to_nil(Map.get(repo, "name")),
+      "repo_url" => resolve_secret_setting(Map.get(repo, "repo_url") || Map.get(repo, "url"), nil),
+      "repo_ref" => resolve_secret_setting(Map.get(repo, "repo_ref") || Map.get(repo, "ref"), nil),
+      "workflow_file" => resolve_path_value(Map.get(repo, "workflow_file") || Map.get(repo, "workflow"), nil),
+      "default" => Map.get(repo, "default") == true
+    }
+    |> drop_nil_values()
+  end
+
+  defp normalize_kaneo_project_repo(_repo), do: nil
+
   defp default_project_states(states, _fallback) when is_list(states), do: states
   defp default_project_states(_states, fallback), do: fallback
+
+  defp blank_to_nil(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp blank_to_nil(value), do: value
 
   defp normalize_optional_map(nil), do: nil
   defp normalize_optional_map(value) when is_map(value), do: normalize_keys(value)

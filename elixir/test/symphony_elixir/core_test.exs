@@ -149,7 +149,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "kaneo"
-    assert is_binary(Map.get(tracker, "project_id"))
+    assert is_binary(Map.get(tracker, "project_id")) or is_list(Map.get(tracker, "projects"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
@@ -240,7 +240,11 @@ defmodule SymphonyElixir.CoreTest do
           name: "Alpha Project",
           slug: "alpha",
           repo_url: "git@example.com:alpha/repo.git",
-          repo_ref: "main"
+          repo_ref: "main",
+          repos: [
+            %{key: "api", repo_url: "git@example.com:alpha/api.git", default: true},
+            %{key: "web", url: "git@example.com:alpha/web.git", ref: "develop"}
+          ]
         },
         %{
           id: "project-b",
@@ -265,6 +269,10 @@ defmodule SymphonyElixir.CoreTest do
                slug: "alpha",
                repo_url: "git@example.com:alpha/repo.git",
                repo_ref: "main",
+               repos: [
+                 %{"key" => "api", "repo_url" => "git@example.com:alpha/api.git", "default" => true},
+                 %{"key" => "web", "repo_url" => "git@example.com:alpha/web.git", "repo_ref" => "develop", "default" => false}
+               ],
                active_states: ["to-do", "in-progress"],
                terminal_states: ["done"]
              },

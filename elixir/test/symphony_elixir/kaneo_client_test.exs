@@ -47,7 +47,7 @@ defmodule SymphonyElixir.KaneoClientTest do
           "id" => "task-1",
           "number" => 7,
           "title" => "Build routed task",
-          "description" => "SOURCE_REPO_REF=feature/task-branch",
+          "description" => "SOURCE_REPO_KEY=frontend\nSOURCE_REPO_REF=feature/task-branch",
           "status" => "to-do",
           "projectId" => "project-a"
         },
@@ -57,6 +57,10 @@ defmodule SymphonyElixir.KaneoClientTest do
           slug: "alpha",
           repo_url: "git@example.com:alpha/repo.git",
           repo_ref: "main",
+          repos: [
+            %{key: "backend", repo_url: "git@example.com:alpha/backend.git", default: true},
+            %{"key" => "frontend", "repo_url" => "git@example.com:alpha/frontend.git", "workflow_file" => "/opt/frontend/WORKFLOW.md"}
+          ],
           workflow_file: "/opt/alpha/WORKFLOW.md"
         }
       )
@@ -67,9 +71,10 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert issue.project_name == "Project Alpha"
     assert issue.project_slug == "alpha"
     assert issue.project_key == "ALPHA"
-    assert issue.source_repo_url == "git@example.com:alpha/repo.git"
+    assert issue.source_repo_key == "frontend"
+    assert issue.source_repo_url == "git@example.com:alpha/frontend.git"
     assert issue.source_repo_ref == "feature/task-branch"
-    assert issue.workflow_file == "/opt/alpha/WORKFLOW.md"
+    assert issue.workflow_file == "/opt/frontend/WORKFLOW.md"
   end
 
   test "fetches candidate issues from multiple configured Kaneo projects" do
