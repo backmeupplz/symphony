@@ -118,6 +118,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       assert log =~ "pr list --repo openai/symphony --head feature/workpad --state open --json number --jq .[].number"
       assert log =~ "pr close 101 --repo openai/symphony"
       assert log =~ "pr close 102 --repo openai/symphony"
+      refute log =~ "api --method DELETE"
 
       {second_output, error_output} =
         capture_task_output(fn ->
@@ -163,6 +164,322 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         log = File.read!(log_path)
         assert log =~ "pr list --repo openai/symphony --head feature/no-output --state open --json number --jq .[].number"
         assert log =~ "pr close 102 --repo openai/symphony"
+      end
+    )
+  end
+
+  test "deletes the remote branch when the branch only has merged pull requests" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '201\n202\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Fmerged" ]; then
+        printf 'false\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "DELETE" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/merged"])
+          end)
+
+        assert output =~ "Deleted remote branch feature/merged after merged PR #201, #202"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo openai/symphony --head feature/merged --state open"
+        assert log =~ "pr list --repo openai/symphony --head feature/merged --state merged"
+        assert log =~ "repo view openai/symphony --json defaultBranchRef --jq .defaultBranchRef.name"
+        assert log =~ "api repos/openai/symphony/branches/feature%2Fmerged --jq .protected"
+        assert log =~ "api --method DELETE repos/openai/symphony/git/refs/heads/feature/merged"
+      end
+    )
+  end
+
+  test "skips branch deletion for protected default branch names" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '301\n'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        error_output =
+          capture_io(:stderr, fn ->
+            BeforeRemove.run(["--branch", "main"])
+          end)
+
+        assert error_output =~ "Skipped deleting remote branch main: protected/default branch name"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo openai/symphony --head main --state merged"
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "skips branch deletion when branch protection cannot be verified" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '401\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Funknown" ]; then
+        printf 'not found\n' >&2
+        exit 1
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        error_output =
+          capture_io(:stderr, fn ->
+            BeforeRemove.run(["--branch", "feature/unknown"])
+          end)
+
+        assert error_output =~ "Skipped deleting remote branch feature/unknown: could not verify branch protection"
+
+        log = File.read!(log_path)
+        assert log =~ "api repos/openai/symphony/branches/feature%2Funknown --jq .protected"
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "skips branch deletion when the branch is the repository default branch" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '501\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'release/current\n'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        error_output =
+          capture_io(:stderr, fn ->
+            BeforeRemove.run(["--branch", "release/current"])
+          end)
+
+        assert error_output =~ "Skipped deleting remote branch release/current: default branch"
+
+        log = File.read!(log_path)
+        assert log =~ "repo view openai/symphony --json defaultBranchRef --jq .defaultBranchRef.name"
+        refute log =~ "branches/release%2Fcurrent"
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "skips branch deletion when default branch cannot be verified" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '601\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'repo unavailable\n' >&2
+        exit 1
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        error_output =
+          capture_io(:stderr, fn ->
+            BeforeRemove.run(["--branch", "feature/default-unknown"])
+          end)
+
+        assert error_output =~ "Skipped deleting remote branch feature/default-unknown: could not verify default branch"
+
+        log = File.read!(log_path)
+        assert log =~ "repo view openai/symphony --json defaultBranchRef --jq .defaultBranchRef.name"
+        refute log =~ "branches/feature%2Fdefault-unknown"
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "skips branch deletion when GitHub reports branch protection" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '701\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/release%2Fprotected" ]; then
+        printf 'true\n'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        error_output =
+          capture_io(:stderr, fn ->
+            BeforeRemove.run(["--branch", "release/protected"])
+          end)
+
+        assert error_output =~ "Skipped deleting remote branch release/protected: protected branch"
+
+        log = File.read!(log_path)
+        assert log =~ "api repos/openai/symphony/branches/release%2Fprotected --jq .protected"
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "reports remote branch deletion failures without aborting cleanup" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '801\n802\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Fdelete-fails" ]; then
+        printf 'false\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "DELETE" ]; then
+        printf 'branch is protected\n' >&2
+        exit 22
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        error_output =
+          capture_io(:stderr, fn ->
+            BeforeRemove.run(["--branch", "feature/delete-fails"])
+          end)
+
+        assert error_output =~
+                 "Failed to delete remote branch feature/delete-fails: exit 22 output=\"branch is protected\""
+
+        log = File.read!(log_path)
+        assert log =~ "api --method DELETE repos/openai/symphony/git/refs/heads/feature/delete-fails"
       end
     )
   end

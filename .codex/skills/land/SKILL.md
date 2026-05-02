@@ -13,10 +13,11 @@ description:
 - Ensure the PR is conflict-free with main.
 - Keep CI green and fix failures when they occur.
 - Squash-merge the PR once checks pass.
+- Delete the remote head branch as part of the successful merge.
 - Do not yield to the user until the PR is merged; keep the watcher loop running
   unless blocked.
-- No need to delete remote branches after merge; the repo auto-deletes head
-  branches.
+- Never delete default/protected branches or unrelated branches; only clean up
+  the PR head branch GitHub reports for the PR being merged.
 
 ## Preconditions
 
@@ -39,6 +40,11 @@ description:
    push with the `push` skill, and re-run checks.
 9. When all checks are green and review feedback is addressed, squash-merge and
    delete the branch using the PR title/body for the merge subject/body.
+   Prefer `gh pr merge --squash --delete-branch --subject "$pr_title" --body "$pr_body"`.
+   If GitHub reports the branch was not deleted, delete only the merged PR head
+   ref with `gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/$branch`.
+   Treat 403/404/422 responses as safe failures to investigate or report rather
+   than broadening the deletion target.
 10. **Context guard:** Before implementing review feedback, confirm it does not
     conflict with the user’s stated intent or task context. If it conflicts,
     respond inline with a justification and ask the user before changing code.
@@ -94,8 +100,8 @@ if ! gh pr checks --watch; then
   exit 1
 fi
 
-# Squash-merge (remote branches auto-delete on merge in this repo)
-gh pr merge --squash --subject "$pr_title" --body "$pr_body"
+# Squash-merge and delete the merged PR head branch.
+gh pr merge --squash --delete-branch --subject "$pr_title" --body "$pr_body"
 ```
 
 ## Async Watch Helper
