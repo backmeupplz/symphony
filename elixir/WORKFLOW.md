@@ -232,7 +232,14 @@ When the task is `in-review`:
 - Do not continue coding unless review feedback arrives.
 - Poll PR comments, review comments, and CI/check status.
 - If changes are requested, move the issue to `rework` and address them.
-- If approved and merged, move the issue to `done`.
+- If approved and merged, confirm the merged PR head branch was deleted before moving the issue to `done`.
+  When Symphony owns the merge, use `gh pr merge --squash --delete-branch` via the land skill.
+  When OpenClaw or a human owns the merge, include branch deletion in the handoff checklist and verify
+  the remote branch is gone; if cleanup is still needed, delete only the merged PR head ref with
+  `gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/<branch>`.
+- Never delete default/protected branches or a branch with an open PR; treat GitHub 403/404/422 deletion
+  responses as safe failures to document instead of widening the deletion target.
+- After branch cleanup is verified or safely skipped, move the issue to `done`.
 
 ## Quality bar before `in-review`
 

@@ -1382,6 +1382,8 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Do not use Peekaboo, AppleScript JavaScript"
     assert prompt =~ "open and follow `.codex/skills/land/SKILL.md`"
     assert prompt =~ "Do not call `gh pr merge` directly"
+    assert prompt =~ "confirm the merged PR head branch was deleted"
+    assert prompt =~ "gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/<branch>"
     assert prompt =~ "Continuation context:"
     assert prompt =~ "retry attempt #2"
   end

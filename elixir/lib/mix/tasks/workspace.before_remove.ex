@@ -1,10 +1,11 @@
 defmodule Mix.Tasks.Workspace.BeforeRemove do
   use Mix.Task
 
-  @shortdoc "Close open GitHub PRs for the current branch before workspace removal"
+  @shortdoc "Clean up GitHub PRs and merged branches before workspace removal"
 
   @moduledoc """
-  Closes open pull requests for the current Git branch.
+  Closes open pull requests for the current Git branch, and deletes the remote
+  branch when GitHub reports that the branch belongs to a merged pull request.
 
   This task is intended for use from the `before_remove` workspace hook.
 
@@ -44,9 +45,10 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
 
   defp maybe_close_open_pull_requests(repo, branch) do
     if gh_available?() and gh_authenticated?() do
-      repo
-      |> list_open_pull_request_numbers(branch)
-      |> Enum.each(&close_pull_request(repo, branch, &1))
+      open_pr_numbers = list_pull_request_numbers(repo, branch, "open")
+
+      Enum.each(open_pr_numbers, &close_pull_request(repo, branch, &1))
+      maybe_delete_merged_branch(repo, branch, open_pr_numbers)
     end
 
     :ok
@@ -60,7 +62,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
     match?({:ok, _output}, run_command("gh", ["auth", "status"]))
   end
 
-  defp list_open_pull_request_numbers(repo, branch) do
+  defp list_pull_request_numbers(repo, branch, state) do
     case run_command("gh", [
            "pr",
            "list",
@@ -69,7 +71,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
            "--head",
            branch,
            "--state",
-           "open",
+           state,
            "--json",
            "number",
            "--jq",
@@ -84,6 +86,81 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         []
     end
   end
+
+  defp maybe_delete_merged_branch(_repo, _branch, [_pr_number | _rest]), do: :ok
+
+  defp maybe_delete_merged_branch(repo, branch, []) do
+    case list_pull_request_numbers(repo, branch, "merged") do
+      [] ->
+        :ok
+
+      merged_pr_numbers ->
+        delete_merged_branch_if_safe(repo, branch, merged_pr_numbers)
+    end
+  end
+
+  defp delete_merged_branch_if_safe(repo, branch, merged_pr_numbers) do
+    case branch_deletion_safety(repo, branch) do
+      :safe ->
+        delete_remote_branch(repo, branch, merged_pr_numbers)
+
+      {:skip, reason} ->
+        Mix.shell().error("Skipped deleting remote branch #{branch}: #{reason}")
+    end
+  end
+
+  defp branch_deletion_safety(_repo, branch) when branch in ["main", "master", "trunk", "develop", "dev"] do
+    {:skip, "protected/default branch name"}
+  end
+
+  defp branch_deletion_safety(repo, branch) do
+    with :not_default <- default_branch_status(repo, branch),
+         :not_protected <- protected_branch_status(repo, branch) do
+      :safe
+    else
+      :default -> {:skip, "default branch"}
+      :protected -> {:skip, "protected branch"}
+      {:unknown, check} -> {:skip, "could not verify #{check}"}
+    end
+  end
+
+  defp default_branch_status(repo, branch) do
+    case run_command("gh", ["repo", "view", repo, "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"]) do
+      {:ok, output} ->
+        if String.trim(output) == branch, do: :default, else: :not_default
+
+      {:error, _reason} ->
+        {:unknown, "default branch"}
+    end
+  end
+
+  defp protected_branch_status(repo, branch) do
+    case run_command("gh", ["api", "repos/#{repo}/branches/#{encode_path_segment(branch)}", "--jq", ".protected"]) do
+      {:ok, output} ->
+        if String.trim(output) == "true", do: :protected, else: :not_protected
+
+      {:error, _reason} ->
+        {:unknown, "branch protection"}
+    end
+  end
+
+  defp delete_remote_branch(repo, branch, merged_pr_numbers) do
+    case run_command("gh", ["api", "--method", "DELETE", "repos/#{repo}/git/refs/heads/#{branch}"]) do
+      {:ok, _output} ->
+        Mix.shell().info("Deleted remote branch #{branch} after merged PR #{format_pr_numbers(merged_pr_numbers)}")
+
+      {:error, {status, output}} ->
+        trimmed_output = String.trim(output)
+
+        Mix.shell().error("Failed to delete remote branch #{branch}: exit #{status}#{format_output(trimmed_output)}")
+    end
+  end
+
+  defp encode_path_segment(value) do
+    URI.encode(value, &URI.char_unreserved?/1)
+  end
+
+  defp format_pr_numbers(numbers), do: numbers |> Enum.map_join(", ", &"##{&1}")
 
   defp close_pull_request(repo, branch, pr_number) do
     case run_command("gh", [
