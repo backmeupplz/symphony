@@ -62,6 +62,12 @@ tracker:
           name: "borodutch.com stats"
           repo_url: "https://github.com/backmeupplz/borodutch-stats"
           repo_ref: "master"
+    - id: "luw130255z9zfh5vfwb3cpgh"
+      name: "MyGround"
+      slug: myg
+      repo_url: "https://github.com/backmeupplz/myground"
+      repo_ref: "master"
+      workflow_file: "/Users/borodutch/code/symphony/elixir/WORKFLOW.md"
   assignee: "$KANEO_ASSIGNEE"
   active_states:
     - to-do
