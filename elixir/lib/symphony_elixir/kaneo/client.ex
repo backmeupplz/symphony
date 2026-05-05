@@ -146,10 +146,12 @@ defmodule SymphonyElixir.Kaneo.Client do
 
         case request(:get, "/task/tasks/#{URI.encode(project_id)}", params: query) do
           {:ok, %{body: body}} ->
+            response_project = project_with_response_metadata(project, body)
+
             fetched_issues =
               body
               |> flatten_tasks_response()
-              |> Enum.map(&normalize_task(&1, project))
+              |> Enum.map(&normalize_task(&1, response_project))
               |> Enum.reject(&is_nil/1)
 
             {:cont, {:ok, fetched_issues ++ issues}}
@@ -235,6 +237,34 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp flatten_tasks_response(%{tasks: tasks}) when is_list(tasks), do: tasks
   defp flatten_tasks_response(_response), do: []
 
+  defp project_with_response_metadata(project, body) do
+    metadata = response_project_metadata(body)
+
+    Enum.reduce([:name, :slug, :icon], project, fn key, acc ->
+      case {blank_to_nil(project_value(acc, key)), Map.get(metadata, key)} do
+        {nil, value} when is_binary(value) -> Map.put(acc, key, value)
+        _ -> acc
+      end
+    end)
+  end
+
+  defp response_project_metadata(%{"data" => data}), do: response_project_metadata(data)
+  defp response_project_metadata(%{data: data}), do: response_project_metadata(data)
+
+  defp response_project_metadata(data) when is_map(data) do
+    %{
+      name: blank_to_nil(project_response_value(data, "name")),
+      slug: blank_to_nil(project_response_value(data, "slug")),
+      icon: blank_to_nil(project_response_value(data, "icon"))
+    }
+  end
+
+  defp response_project_metadata(_data), do: %{}
+
+  defp project_response_value(data, key) when is_map(data) do
+    Map.get(data, key) || Map.get(data, String.to_atom(key))
+  end
+
   defp normalize_issue_ids(issue_ids) do
     issue_ids =
       issue_ids
@@ -297,6 +327,7 @@ defmodule SymphonyElixir.Kaneo.Client do
       project_name: project.name,
       project_slug: project.slug,
       project_key: project.key,
+      project_icon: project.icon,
       tracker_identifier: tracker_identifier,
       source_repo_key: repo_value(primary_repo, "key"),
       source_repo_url: repo_value(primary_repo, "repo_url"),
@@ -337,6 +368,7 @@ defmodule SymphonyElixir.Kaneo.Client do
       name: project_name,
       slug: project_slug,
       key: project_key,
+      icon: blank_to_nil(project_value(project, :icon)),
       repo_url: blank_to_nil(project_value(project, :repo_url)),
       repo_ref: blank_to_nil(project_value(project, :repo_ref)),
       repos: project_value(project, :repos) || [],
@@ -461,20 +493,17 @@ defmodule SymphonyElixir.Kaneo.Client do
       |> Enum.join("\n")
       |> String.downcase()
 
-    Enum.filter(repos, fn repo ->
-      repo_key = repo_value(repo, "key")
-      repo_name = repo_value(repo, "name")
-
-      Enum.any?([repo_key, repo_name], fn value ->
-        case normalize_repo_search_term(value) do
-          nil -> false
-          term -> String.contains?(task_text, term)
-        end
-      end)
-    end)
+    Enum.filter(repos, &repo_matches_task_text?(&1, task_text))
   end
 
   defp infer_repos_from_task_text(_task, _repos), do: []
+
+  defp repo_matches_task_text?(repo, task_text) do
+    [repo_value(repo, "key"), repo_value(repo, "name")]
+    |> Enum.map(&normalize_repo_search_term/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.any?(&String.contains?(task_text, &1))
+  end
 
   defp normalize_repo_search_term(value) when is_binary(value) do
     value

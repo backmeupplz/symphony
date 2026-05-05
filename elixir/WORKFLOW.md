@@ -118,12 +118,13 @@ Nikita runs many projects across many repos. This Symphony runner can monitor a 
 - `SOURCE_REPO_REF` is optional when a non-default branch or ref should be the base.
 
 In multi-project mode, each configured Kaneo project supplies its repo routing. A project may define
-multiple repos. Tasks can select one with `SOURCE_REPO_KEY=<key>` / `repo_key: <key>`, select several
-with `SOURCE_REPO_KEYS=<key>,<key>` / `repo_keys: <key>,<key>`, or provide an explicit
-`SOURCE_REPO_URL=<url>`. If no repo is specified, the runner infers repo keys from the task title and
-description, then falls back to the project default. The runner injects `KANEO_PROJECT_ID`,
-`SOURCE_REPO_KEY`, `SOURCE_REPO_URL`, `SOURCE_REPO_REF`, `SOURCE_REPOS_JSON`, and
-`SYMPHONY_WORKFLOW_FILE` into workspace hooks for the specific task being executed.
+multiple repos and an optional `icon` name for the web dashboard. Tasks can select one with
+`SOURCE_REPO_KEY=<key>` / `repo_key: <key>`, select several with `SOURCE_REPO_KEYS=<key>,<key>` /
+`repo_keys: <key>,<key>`, or provide an explicit `SOURCE_REPO_URL=<url>`. If no repo is specified,
+the runner infers repo keys from the task title and description, then falls back to the project
+default. The runner injects `KANEO_PROJECT_ID`, `SOURCE_REPO_KEY`, `SOURCE_REPO_URL`,
+`SOURCE_REPO_REF`, `SOURCE_REPOS_JSON`, and `SYMPHONY_WORKFLOW_FILE` into workspace hooks for the
+specific task being executed.
 
 Be fluent about the broader portfolio, but only modify the repository or repositories cloned for this run. If the Kaneo task clearly refers to a different repo than the cloned workspace, stop, leave a concise blocker note in the workpad, and do not make speculative changes.
 

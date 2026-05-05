@@ -55,6 +55,7 @@ defmodule SymphonyElixir.KaneoClientTest do
           id: "project-a",
           name: "Project Alpha",
           slug: "alpha",
+          icon: "Mic",
           repo_url: "git@example.com:alpha/repo.git",
           repo_ref: "main",
           repos: [
@@ -71,6 +72,7 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert issue.project_name == "Project Alpha"
     assert issue.project_slug == "alpha"
     assert issue.project_key == "ALPHA"
+    assert issue.project_icon == "Mic"
     assert issue.source_repo_key == "frontend"
     assert issue.source_repo_url == "git@example.com:alpha/frontend.git"
     assert issue.source_repo_ref == "feature/task-branch"
@@ -159,6 +161,7 @@ defmodule SymphonyElixir.KaneoClientTest do
         %{
           id: "project-a",
           slug: "alpha",
+          icon: "Mic",
           repo_url: "git@example.com:alpha/repo.git"
         },
         %{
@@ -177,6 +180,7 @@ defmodule SymphonyElixir.KaneoClientTest do
           String.ends_with?(opts[:url], "/task/tasks/project-a") ->
             %{
               "data" => %{
+                "icon" => "Bot",
                 "columns" => [
                   %{
                     "tasks" => [
@@ -196,6 +200,9 @@ defmodule SymphonyElixir.KaneoClientTest do
           String.ends_with?(opts[:url], "/task/tasks/project-b") ->
             %{
               "data" => %{
+                "name" => "Beta",
+                "slug" => "beta",
+                "icon" => "Map",
                 "columns" => [
                   %{
                     "tasks" => [
@@ -219,6 +226,7 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert {:ok, issues} = KaneoClient.fetch_candidate_issues()
 
     assert Enum.map(issues, & &1.identifier) == ["ALPHA-KANEO-1", "BETA-KANEO-1"]
+    assert Enum.map(issues, & &1.project_icon) == ["Mic", "Map"]
 
     assert Enum.map(issues, & &1.source_repo_url) == [
              "git@example.com:alpha/repo.git",
