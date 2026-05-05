@@ -168,7 +168,6 @@ tracker:
   projects:
     - id: kaneo-project-alpha
       slug: alpha
-      icon: mic
       repo_url: git@github.com:your-org/alpha.git
       repo_ref: main
       workflow_file: /opt/symphony/workflows/alpha.md
@@ -180,8 +179,7 @@ tracker:
 Symphony polls all configured projects and prefixes Kaneo task identifiers with the project key
 derived from `slug`, `name`, or `id`, for example `ALPHA-KANEO-1`. That project-aware identifier is
 used in run metadata and workspace paths, so tasks with the same Kaneo number in different projects
-do not collide. The optional `icon` value is used by the web dashboard; known project names and
-slugs get curated defaults, and unknown projects fall back to deterministic initials and colors.
+do not collide.
 
 Workspace hooks receive per-task routing environment variables:
 

@@ -5,7 +5,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter, ProjectIcon}
+  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
 
   @impl true
@@ -131,7 +131,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             <div class="table-wrap">
               <table class="data-table data-table-running">
                 <colgroup>
-                  <col style="width: 15rem;" />
+                  <col style="width: 12rem;" />
                   <col style="width: 8rem;" />
                   <col style="width: 7.5rem;" />
                   <col style="width: 8.5rem;" />
@@ -151,7 +151,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <tbody>
                   <tr :for={entry <- @payload.running}>
                     <td>
-                      <.issue_identity entry={entry} />
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
                     </td>
                     <td>
                       <span class={state_badge_class(entry.state)}>
@@ -227,7 +230,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <tbody>
                   <tr :for={entry <- @payload.retrying}>
                     <td>
-                      <.issue_identity entry={entry} />
+                      <div class="issue-stack">
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
+                      </div>
                     </td>
                     <td><%= entry.attempt %></td>
                     <td class="mono"><%= entry.due_at || "n/a" %></td>
@@ -245,59 +251,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
-  end
-
-  defp issue_identity(assigns) do
-    ~H"""
-    <div class="project-identity">
-      <span
-        class="project-icon"
-        style={"--project-icon-bg: #{@entry.project_icon.background}; --project-icon-color: #{@entry.project_icon.color};"}
-        title={@entry.project_icon.label}
-        aria-label={@entry.project_icon.label}
-      >
-        <svg
-          :if={@entry.project_icon.type == "svg"}
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path :for={path <- ProjectIcon.paths(@entry.project_icon.icon)} d={path}></path>
-        </svg>
-        <span :if={@entry.project_icon.type == "initials"} class="project-icon-initials">
-          <%= @entry.project_icon.initials %>
-        </span>
-      </span>
-
-      <div class="issue-stack">
-        <span class="issue-line">
-          <span :if={project_label(@entry)} class="project-label"><%= project_label(@entry) %></span>
-          <span class="issue-id"><%= @entry.issue_identifier %></span>
-        </span>
-        <span :if={project_subtitle(@entry)} class="project-subtitle"><%= project_subtitle(@entry) %></span>
-        <a class="issue-link" href={"/api/v1/#{@entry.issue_identifier}"}>JSON details</a>
-      </div>
-    </div>
-    """
-  end
-
-  defp project_label(entry) when is_map(entry) do
-    Map.get(entry, :project_key) || Map.get(entry, :project_slug)
-  end
-
-  defp project_subtitle(entry) when is_map(entry) do
-    [Map.get(entry, :project_name), Map.get(entry, :tracker_identifier)]
-    |> Enum.filter(&is_binary/1)
-    |> Enum.reject(&(&1 == "" or &1 == Map.get(entry, :issue_identifier)))
-    |> Enum.uniq()
-    |> case do
-      [] -> nil
-      parts -> Enum.join(parts, " / ")
-    end
   end
 
   defp orchestrator do

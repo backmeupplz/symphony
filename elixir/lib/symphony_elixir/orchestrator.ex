@@ -1200,7 +1200,6 @@ defmodule SymphonyElixir.Orchestrator do
           project_name: metadata.issue.project_name,
           project_slug: metadata.issue.project_slug,
           project_key: metadata.issue.project_key,
-          project_icon: metadata.issue.project_icon,
           tracker_identifier: metadata.issue.tracker_identifier,
           source_repo_key: metadata.issue.source_repo_key,
           source_repo_url: metadata.issue.source_repo_url,

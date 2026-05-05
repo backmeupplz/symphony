@@ -7,7 +7,6 @@ defmodule SymphonyElixir.ExtensionsTest do
   alias SymphonyElixir.Kaneo
   alias SymphonyElixir.Linear.Adapter
   alias SymphonyElixir.Tracker.Memory
-  alias SymphonyElixirWeb.ProjectIcon
 
   @endpoint SymphonyElixirWeb.Endpoint
 
@@ -426,14 +425,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => nil,
-                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
-                 "project_id" => "project-voicy",
-                 "project_name" => "Voicy",
-                 "project_slug" => "voi",
-                 "project_key" => "VOI",
-                 "project_icon_name" => "Mic",
-                 "project_icon" => json_icon(%{project_icon: "Mic", project_name: "Voicy", project_slug: "voi"}),
-                 "tracker_identifier" => "KANEO-1"
+                 "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
              "retrying" => [
@@ -444,13 +436,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
                  "error" => "boom",
                  "worker_host" => nil,
-                 "workspace_path" => nil,
-                 "project_id" => "project-myg",
-                 "project_name" => "MyGround",
-                 "project_slug" => "myg",
-                 "project_key" => "MYG",
-                 "project_icon" => json_icon(%{project_name: "MyGround", project_slug: "myg"}),
-                 "tracker_identifier" => "KANEO-2"
+                 "workspace_path" => nil
                }
              ],
              "codex_totals" => %{
@@ -484,14 +470,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "last_event" => "notification",
                "last_message" => "rendered",
                "last_event_at" => nil,
-               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12},
-               "project_id" => "project-voicy",
-               "project_name" => "Voicy",
-               "project_slug" => "voi",
-               "project_key" => "VOI",
-               "project_icon_name" => "Mic",
-               "project_icon" => json_icon(%{project_icon: "Mic", project_name: "Voicy", project_slug: "voi"}),
-               "tracker_identifier" => "KANEO-1"
+               "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
              "logs" => %{"codex_session_logs" => []},
@@ -638,11 +617,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Offline"
     assert html =~ "Copy ID"
     assert html =~ "Codex update"
-    assert html =~ "project-icon"
-    assert html =~ "VOI"
-    assert html =~ "MYG"
-    assert html =~ "Voicy / KANEO-1"
-    assert html =~ "MyGround / KANEO-2"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -794,12 +768,6 @@ defmodule SymphonyElixir.ExtensionsTest do
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
-          project_id: "project-voicy",
-          project_name: "Voicy",
-          project_slug: "voi",
-          project_key: "VOI",
-          project_icon: "Mic",
-          tracker_identifier: "KANEO-1",
           started_at: DateTime.utc_now()
         }
       ],
@@ -809,12 +777,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           identifier: "MT-RETRY",
           attempt: 2,
           due_in_ms: 2_000,
-          error: "boom",
-          project_id: "project-myg",
-          project_name: "MyGround",
-          project_slug: "myg",
-          project_key: "MYG",
-          tracker_identifier: "KANEO-2"
+          error: "boom"
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},
@@ -828,13 +791,6 @@ defmodule SymphonyElixir.ExtensionsTest do
     end)
 
     HttpServer.bound_port()
-  end
-
-  defp json_icon(metadata) do
-    metadata
-    |> ProjectIcon.resolve()
-    |> Jason.encode!()
-    |> Jason.decode!()
   end
 
   defp assert_eventually(fun, attempts \\ 20)

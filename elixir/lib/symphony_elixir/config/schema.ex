@@ -53,7 +53,6 @@ defmodule SymphonyElixir.Config.Schema do
         field(:id, :string)
         field(:name, :string)
         field(:slug, :string)
-        field(:icon, :string)
         field(:repo_url, :string)
         field(:repo_ref, :string)
         field(:repos, {:array, :map})
@@ -70,7 +69,6 @@ defmodule SymphonyElixir.Config.Schema do
           :id,
           :name,
           :slug,
-          :icon,
           :repo_url,
           :repo_ref,
           :repos,
@@ -134,7 +132,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:root, :string)
+      field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -458,7 +456,6 @@ defmodule SymphonyElixir.Config.Schema do
     %{
       project
       | repo_url: resolve_secret_setting(project.repo_url, nil),
-        icon: blank_to_nil(project.icon),
         repo_ref: resolve_secret_setting(project.repo_ref, nil),
         repos: normalize_kaneo_project_repos(project.repos),
         workflow_file: resolve_path_value(project.workflow_file, nil),

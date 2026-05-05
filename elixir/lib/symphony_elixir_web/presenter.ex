@@ -4,7 +4,6 @@ defmodule SymphonyElixirWeb.Presenter do
   """
 
   alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
-  alias SymphonyElixirWeb.ProjectIcon
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -128,7 +127,6 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
     }
-    |> Map.merge(project_payload(entry))
   end
 
   defp running_issue_payload(running) do
@@ -159,7 +157,6 @@ defmodule SymphonyElixirWeb.Presenter do
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path)
     }
-    |> Map.merge(project_payload(retry))
   end
 
   defp workspace_path(issue_identifier, running, retry) do
@@ -178,21 +175,11 @@ defmodule SymphonyElixirWeb.Presenter do
       project_name: Map.get(entry, :project_name),
       project_slug: Map.get(entry, :project_slug),
       project_key: Map.get(entry, :project_key),
-      project_icon_name: Map.get(entry, :project_icon),
       tracker_identifier: Map.get(entry, :tracker_identifier),
       source_repo_key: Map.get(entry, :source_repo_key),
       source_repo_url: Map.get(entry, :source_repo_url),
       source_repo_ref: Map.get(entry, :source_repo_ref),
-      source_repos: Map.get(entry, :source_repos),
-      project_icon:
-        ProjectIcon.resolve(%{
-          project_icon: Map.get(entry, :project_icon),
-          project_id: Map.get(entry, :project_id),
-          project_name: Map.get(entry, :project_name),
-          project_slug: Map.get(entry, :project_slug),
-          project_key: Map.get(entry, :project_key),
-          issue_identifier: Map.get(entry, :identifier)
-        })
+      source_repos: Map.get(entry, :source_repos)
     }
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
     |> Map.new()
