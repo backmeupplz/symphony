@@ -329,8 +329,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         "kaneo_api",
         %{
           "method" => "POST",
-          "path" => "/comment/task-1",
-          "body" => %{"content" => "hello"},
+          "path" => "/activity/comment",
+          "body" => %{"taskId" => "task-1", "comment" => "hello"},
           "params" => %{"include" => "user"}
         },
         kaneo_client: fn method, path, opts ->
@@ -339,8 +339,8 @@ defmodule SymphonyElixir.Codex.DynamicToolTest do
         end
       )
 
-    assert_received {:kaneo_client_called, :post, "/comment/task-1", opts}
-    assert Keyword.fetch!(opts, :json) == %{"content" => "hello"}
+    assert_received {:kaneo_client_called, :post, "/activity/comment", opts}
+    assert Keyword.fetch!(opts, :json) == %{"taskId" => "task-1", "comment" => "hello"}
     assert Keyword.fetch!(opts, :params) == %{"include" => "user"}
 
     assert response["success"] == true

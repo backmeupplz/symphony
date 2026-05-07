@@ -59,7 +59,7 @@ defmodule SymphonyElixir.Kaneo.Client do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(task_id, body) when is_binary(task_id) and is_binary(body) do
-    case request(:post, "/comment/#{URI.encode(task_id)}", json: %{content: body}) do
+    case request(:post, "/activity/comment", json: %{taskId: task_id, comment: body}) do
       {:ok, %{status: status}} when status in 200..299 -> :ok
       {:ok, response} -> {:error, {:kaneo_api_status, response.status}}
       {:error, reason} -> {:error, reason}

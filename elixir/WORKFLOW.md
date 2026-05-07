@@ -182,12 +182,13 @@ debugging URL, target bot, exact message text, and expected verification.
 3. Final message must report completed actions and blockers only. Do not include "next steps for user".
 4. Work only in the cloned repository copy.
 5. Use Kaneo via the injected `kaneo_api` tool for comments/status tracking when available.
-6. Keep a single persistent Kaneo workpad comment headed `## Codex Workpad`.
-7. Reproduce before changing code whenever there is a bug or concrete failing behavior.
-8. Treat ticket-provided `Validation`, `Test Plan`, or `Testing` sections as mandatory.
-9. If you discover follow-up work outside the current scope, create a separate Kaneo backlog (`planned`) task instead of silently expanding scope.
-10. If the repo includes `.codex/skills/land/SKILL.md`, open and follow `.codex/skills/land/SKILL.md` before making substantial changes.
-11. Do not call `gh pr merge` directly.
+6. Post work notes only as UI-visible Kaneo activity comments: create with `POST /activity/comment` using `{ "taskId": "...", "comment": "..." }`, read with `GET /activity/{taskId}`, and update with `PUT /activity/comment` using `{ "activityId": "...", "comment": "..." }`.
+7. Keep a single persistent Kaneo workpad comment headed `## Codex Workpad`; never use `/comment/{taskId}`, task description edits, or GitHub comments for routine progress notes.
+8. Reproduce before changing code whenever there is a bug or concrete failing behavior.
+9. Treat ticket-provided `Validation`, `Test Plan`, or `Testing` sections as mandatory.
+10. If you discover follow-up work outside the current scope, create a separate Kaneo backlog (`planned`) task instead of silently expanding scope.
+11. If the repo includes `.codex/skills/land/SKILL.md`, open and follow `.codex/skills/land/SKILL.md` before making substantial changes.
+12. Do not call `gh pr merge` directly.
 
 ## Status map
 
@@ -273,7 +274,7 @@ Rules:
 
 When the task is `in-review`:
 - Do not continue coding unless review feedback arrives.
-- Poll PR comments, review comments, and CI/check status.
+- Poll PR review state, review threads, and CI/check status; do not post GitHub comments.
 - If changes are requested, move the issue to `rework` and address them.
 - If approved and merged, confirm the merged PR head branch was deleted before moving the issue to `done`.
   When Symphony owns the merge, use `gh pr merge --squash --delete-branch` via the land skill.
@@ -293,7 +294,7 @@ Do not move a task to `in-review` unless all of the following are true:
 - the latest commit has green validation for the task scope;
 - branch is pushed and PR is linked on the Kaneo task;
 - all actionable PR feedback has been addressed or explicitly answered.
-- the workpad and PR description/comment contain a concise `Testing` or `Validation` handoff that separates:
+- the workpad and PR description contain a concise `Testing` or `Validation` handoff that separates:
   - automated checks Symphony ran, with command/result evidence;
   - manual QA still required, or an explicit `Manual QA: not required` with rationale.
   - bounded review guidance tied to the actual changed surface area, with unknowns called out.
@@ -304,7 +305,7 @@ When a task needs browser/device/manual validation, make the handoff concrete. I
 - exact environment to use (for example Telegram Web in Safari, Chrome, iOS simulator, Android emulator);
 - the user path to exercise;
 - the expected result;
-- any screenshots, recordings, or comments needed for approval.
+- any screenshots, recordings, or Kaneo comments needed for approval.
 - for Telegram Web QA, whether the CDP helper was used, the Chrome remote debugging URL, target bot,
   message text, and the helper's JSON verification output or the blocker preventing it.
 

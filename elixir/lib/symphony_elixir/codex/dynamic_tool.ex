@@ -41,7 +41,7 @@ defmodule SymphonyElixir.Codex.DynamicTool do
       },
       "path" => %{
         "type" => "string",
-        "description" => "Kaneo API path, for example /task/{id} or /comment/{taskId}."
+        "description" => "Kaneo API path, for example /task/{id} or /activity/comment for UI-visible task comments."
       },
       "body" => %{
         "type" => ["object", "array", "null"],

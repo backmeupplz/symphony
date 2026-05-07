@@ -257,32 +257,34 @@ defmodule SymphonyElixir.KaneoClientTest do
     Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
       send(self(), {:kaneo_request, opts[:method], opts[:url], opts[:json], opts[:headers]})
 
-      case {opts[:method], opts[:url]} do
-        {:post, "https://kaneo.test/api/comment/task-ok"} ->
+      json = Keyword.get(opts, :json, %{})
+
+      case {opts[:method], opts[:url], json[:taskId]} do
+        {:post, "https://kaneo.test/api/activity/comment", "task-ok"} ->
           {:ok, %Req.Response{status: 201, body: %{}}}
 
-        {:post, "https://kaneo.test/api/comment/task-fail"} ->
+        {:post, "https://kaneo.test/api/activity/comment", "task-fail"} ->
           {:ok, %Req.Response{status: 422, body: String.duplicate("x", 1_050)}}
 
-        {:post, "https://kaneo.test/api/comment/task-error"} ->
+        {:post, "https://kaneo.test/api/activity/comment", "task-error"} ->
           {:error, :timeout}
 
-        {:put, "https://kaneo.test/api/task/assignee/task-ok"} ->
+        {:put, "https://kaneo.test/api/task/assignee/task-ok", _} ->
           {:ok, %Req.Response{status: 200, body: %{}}}
 
-        {:put, "https://kaneo.test/api/task/assignee/task-fail"} ->
+        {:put, "https://kaneo.test/api/task/assignee/task-fail", _} ->
           {:ok, %Req.Response{status: 500, body: %{error: "nope"}}}
 
-        {:put, "https://kaneo.test/api/task/assignee/task-error"} ->
+        {:put, "https://kaneo.test/api/task/assignee/task-error", _} ->
           {:error, :closed}
 
-        {:put, "https://kaneo.test/api/task/status/task-ok"} ->
+        {:put, "https://kaneo.test/api/task/status/task-ok", _} ->
           {:ok, %Req.Response{status: 204, body: ""}}
 
-        {:put, "https://kaneo.test/api/task/status/task-fail"} ->
+        {:put, "https://kaneo.test/api/task/status/task-fail", _} ->
           {:ok, %Req.Response{status: 409, body: "conflict"}}
 
-        {:put, "https://kaneo.test/api/task/status/task-error"} ->
+        {:put, "https://kaneo.test/api/task/status/task-error", _} ->
           {:error, :econnrefused}
       end
     end)
@@ -299,7 +301,7 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert {:error, {:kaneo_api_status, 409}} = KaneoClient.update_issue_state("task-fail", "in-progress")
     assert {:error, {:kaneo_api_request, :econnrefused}} = KaneoClient.update_issue_state("task-error", "in-progress")
 
-    assert_receive {:kaneo_request, :post, "https://kaneo.test/api/comment/task-ok", %{content: "body"}, headers}
+    assert_receive {:kaneo_request, :post, "https://kaneo.test/api/activity/comment", %{taskId: "task-ok", comment: "body"}, headers}
     assert {"Authorization", "Bearer token"} in headers
   end
 
