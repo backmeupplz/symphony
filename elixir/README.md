@@ -153,6 +153,23 @@ codex:
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
 
+### Restart and Resume Audit
+
+Symphony keeps scheduler state in memory, but restart continuity is task-backed. On startup it treats
+tracker tasks in configured active states as the durable source of truth, logs a restart/resume audit,
+then redispatches eligible work into the preserved per-issue workspace.
+
+Run the read-only audit manually from `elixir/`:
+
+```bash
+mise exec -- mix symphony.resume_audit
+```
+
+The report lists active task identifiers, states, expected workspace paths, whether local workspaces
+exist, and the action Symphony will take, such as resuming a preserved workspace or dispatching an
+active task into a workspace. Remote worker workspaces are listed with existence `unknown` because
+the audit does not SSH into workers.
+
 ### Kaneo Multi-Project Routing
 
 For Kaneo, `tracker.project_id` remains supported for legacy single-project runners. To monitor

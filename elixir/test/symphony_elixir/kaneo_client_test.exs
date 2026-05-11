@@ -305,6 +305,22 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert {"Authorization", "Bearer token"} in headers
   end
 
+  test "Kaneo task fetch returns an error for non-success statuses" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a",
+      tracker_active_states: ["to-do"]
+    )
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn _opts ->
+      {:ok, %Req.Response{status: 401, body: "Unauthorized"}}
+    end)
+
+    assert {:error, {:kaneo_api_status, 401}} = KaneoClient.fetch_candidate_issues()
+  end
+
   test "covers Kaneo fetch error and config edge cases" do
     previous_kaneo_api_key = System.get_env("KANEO_API_KEY")
     previous_kaneo_project_id = System.get_env("KANEO_PROJECT_ID")

@@ -567,6 +567,57 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "restart resume audit reports active task-backed work and preserved workspaces" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-audit-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Done"]
+      )
+
+      active_issue = %Issue{
+        id: "issue-resume",
+        identifier: "OCL-KANEO-8",
+        state: "In Progress",
+        title: "Resume active work",
+        description: "Task-backed restart proof"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [active_issue])
+      File.mkdir_p!(Path.join(test_root, "OCL-KANEO-8"))
+
+      assert {:ok, [entry]} = SymphonyElixir.ResumeAudit.entries()
+
+      assert entry.issue_id == "issue-resume"
+      assert entry.identifier == "OCL-KANEO-8"
+      assert entry.state == "In Progress"
+      assert entry.resume_action == "resume preserved workspace"
+      assert [%{worker_host: nil, path: workspace_path, exists?: true, error: nil}] = entry.workspace_checks
+
+      assert {:ok, expected_workspace_path} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join(test_root, "OCL-KANEO-8"))
+
+      assert workspace_path == expected_workspace_path
+
+      report = SymphonyElixir.ResumeAudit.format_report([entry])
+      assert report =~ "Source of truth: tracker tasks in active states"
+      assert report =~ "OCL-KANEO-8 [In Progress]"
+      assert report =~ "action: resume preserved workspace"
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
+  end
+
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 

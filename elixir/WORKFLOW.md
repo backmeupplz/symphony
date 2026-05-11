@@ -190,6 +190,20 @@ debugging URL, target bot, exact message text, and expected verification.
 11. If the repo includes `.codex/skills/land/SKILL.md`, open and follow `.codex/skills/land/SKILL.md` before making substantial changes.
 12. Do not call `gh pr merge` directly.
 
+## Restart continuity
+
+Kaneo active states are the durable source of truth for resumable OpenClaw/Symphony work. After a
+gateway, Codex, or Symphony restart, active tasks are rediscovered from Kaneo and resumed from their
+preserved workspace and workpad state.
+
+- Keep every active implementation task backed by a Kaneo task in an active state.
+- Keep the Kaneo workpad current enough that a fresh session can resume without relying on chat
+  context.
+- Use `mix symphony.resume_audit` from `elixir/` to inspect which active tasks Symphony will
+  redispatch after restart and whether preserved local workspaces exist.
+- Do not store secrets, private transcripts, or bulky chat logs in resumable state; store paths,
+  task IDs, command evidence, and concise status instead.
+
 ## Status map
 
 - `planned` / backlog -> not active; do not modify, do not start.

@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{AgentRunner, Config, ResumeAudit, StatusDashboard, Tracker, Workspace}
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -65,6 +65,7 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
+    log_startup_resume_audit()
     state = schedule_tick(state, 0)
 
     {:ok, state}
@@ -980,6 +981,23 @@ defmodule SymphonyElixir.Orchestrator do
 
       {:error, reason} ->
         Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+    end
+  end
+
+  defp log_startup_resume_audit do
+    case ResumeAudit.entries() do
+      {:ok, []} ->
+        Logger.info("Startup restart/resume audit found no active task-backed work")
+
+      {:ok, entries} ->
+        Logger.info("Startup restart/resume audit found #{length(entries)} active task-backed issue(s)")
+
+        Enum.each(entries, fn entry ->
+          Logger.info("Startup restart/resume candidate issue_id=#{entry.issue_id} issue_identifier=#{entry.identifier} state=#{entry.state} action=#{entry.resume_action}")
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Startup restart/resume audit failed: #{inspect(reason)}")
     end
   end
 

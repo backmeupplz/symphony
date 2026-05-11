@@ -145,7 +145,7 @@ defmodule SymphonyElixir.Kaneo.Client do
         query = [status: state_name, sortBy: "priority", sortOrder: "asc"]
 
         case request(:get, "/task/tasks/#{URI.encode(project_id)}", params: query) do
-          {:ok, %{body: body}} ->
+          {:ok, %{status: status, body: body}} when status in 200..299 ->
             fetched_issues =
               body
               |> flatten_tasks_response()
@@ -153,6 +153,9 @@ defmodule SymphonyElixir.Kaneo.Client do
               |> Enum.reject(&is_nil/1)
 
             {:cont, {:ok, fetched_issues ++ issues}}
+
+          {:ok, %{status: status}} ->
+            {:halt, {:error, {:kaneo_api_status, status}}}
 
           {:error, reason} ->
             {:halt, {:error, reason}}
