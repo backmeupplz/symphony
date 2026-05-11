@@ -464,20 +464,23 @@ defmodule SymphonyElixir.Kaneo.Client do
       |> Enum.join("\n")
       |> String.downcase()
 
-    Enum.filter(repos, fn repo ->
-      repo_key = repo_value(repo, "key")
-      repo_name = repo_value(repo, "name")
-
-      Enum.any?([repo_key, repo_name], fn value ->
-        case normalize_repo_search_term(value) do
-          nil -> false
-          term -> String.contains?(task_text, term)
-        end
-      end)
-    end)
+    Enum.filter(repos, &repo_matches_task_text?(&1, task_text))
   end
 
   defp infer_repos_from_task_text(_task, _repos), do: []
+
+  defp repo_matches_task_text?(repo, task_text) do
+    repo_terms = [repo_value(repo, "key"), repo_value(repo, "name")]
+
+    Enum.any?(repo_terms, &repo_search_term_matches?(&1, task_text))
+  end
+
+  defp repo_search_term_matches?(value, task_text) do
+    case normalize_repo_search_term(value) do
+      nil -> false
+      term -> String.contains?(task_text, term)
+    end
+  end
 
   defp normalize_repo_search_term(value) when is_binary(value) do
     value
