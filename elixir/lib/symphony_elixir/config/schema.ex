@@ -132,7 +132,7 @@ defmodule SymphonyElixir.Config.Schema do
 
     @primary_key false
     embedded_schema do
-      field(:root, :string, default: Path.join(System.tmp_dir!(), "symphony_workspaces"))
+      field(:root, :string)
     end
 
     @spec changeset(%__MODULE__{}, map()) :: Ecto.Changeset.t()
@@ -473,8 +473,6 @@ defmodule SymphonyElixir.Config.Schema do
     |> Enum.reject(&is_nil/1)
   end
 
-  defp normalize_kaneo_project_repos(_repos), do: nil
-
   defp normalize_kaneo_project_repo(repo) when is_map(repo) do
     repo = normalize_keys(repo)
 
@@ -488,8 +486,6 @@ defmodule SymphonyElixir.Config.Schema do
     }
     |> drop_nil_values()
   end
-
-  defp normalize_kaneo_project_repo(_repo), do: nil
 
   defp default_project_states(states, _fallback) when is_list(states), do: states
   defp default_project_states(_states, fallback), do: fallback

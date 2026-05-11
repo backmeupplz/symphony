@@ -1572,10 +1572,10 @@ API design notes:
 
 ### 14.3 Partial State Recovery (Restart)
 
-Current design is intentionally in-memory for scheduler state.
-Restart recovery means the service can resume useful operation by polling tracker state and reusing
-preserved workspaces. It does not mean retry timers, running sessions, or live worker state survive
-process restart.
+Current design is intentionally in-memory for scheduler state. Restart recovery is task-backed:
+tracker issues in configured active states are the durable source of truth, and preserved per-issue
+workspaces provide local continuity. It does not mean retry timers, running sessions, or live worker
+state survive process restart.
 
 After restart:
 
@@ -1583,8 +1583,13 @@ After restart:
 - No running sessions are assumed recoverable.
 - Service recovers by:
   - startup terminal workspace cleanup
+  - startup restart/resume audit of active task-backed work
   - fresh polling of active issues
   - re-dispatching eligible work
+
+Implementations SHOULD provide a read-only restart/resume audit command that lists active issues,
+their expected workspace paths, whether local workspaces exist, and the action the next poll will
+take. The audit MUST avoid serializing secrets, private transcripts, or large chat logs.
 
 ### 14.4 Operator Intervention Points
 

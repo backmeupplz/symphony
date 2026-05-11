@@ -2,7 +2,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   use SymphonyElixir.TestSupport
   alias Ecto.Changeset
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
+  alias SymphonyElixir.Config.Schema.{Codex, Server, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -1056,6 +1056,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert {:ok, %{"a" => 1}} = StringOrMap.dump(%{"a" => 1})
     assert :error = StringOrMap.dump(123)
 
+    assert Server.changeset(%Server{}, %{port: 0, host: "0.0.0.0"}).valid?
+    refute Server.changeset(%Server{}, %{port: -1}).valid?
+
     assert Schema.normalize_state_limits(nil) == %{}
 
     assert Schema.normalize_state_limits(%{"In Progress" => 2, todo: 1}) == %{
@@ -1118,6 +1121,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert settings.tracker.api_key == "fallback-linear-token"
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "kaneo",
+                 projects: [
+                   %{
+                     id: "project-a",
+                     repos: [
+                       %{key: " ", name: "", repo_url: "git@example.com:project/repo.git"}
+                     ]
+                   }
+                 ]
+               }
+             })
+
+    assert [%{"repo_url" => "git@example.com:project/repo.git", "default" => false}] =
+             settings.tracker.projects |> List.first() |> Map.fetch!(:repos)
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do

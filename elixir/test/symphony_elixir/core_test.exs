@@ -567,6 +567,158 @@ defmodule SymphonyElixir.CoreTest do
     end
   end
 
+  test "restart resume audit reports active task-backed work and preserved workspaces" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-audit-#{System.unique_integer([:positive])}"
+      )
+
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["Todo", "In Progress"],
+        tracker_terminal_states: ["Done"]
+      )
+
+      active_issue = %Issue{
+        id: "issue-resume",
+        identifier: "OCL-KANEO-8",
+        state: "In Progress",
+        title: "Resume active work",
+        description: "Task-backed restart proof"
+      }
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [active_issue])
+      File.mkdir_p!(Path.join(test_root, "OCL-KANEO-8"))
+
+      assert {:ok, [entry]} = SymphonyElixir.ResumeAudit.entries()
+
+      assert entry.issue_id == "issue-resume"
+      assert entry.identifier == "OCL-KANEO-8"
+      assert entry.state == "In Progress"
+      assert entry.resume_action == "resume preserved workspace"
+      assert [%{worker_host: nil, path: workspace_path, exists?: true, error: nil}] = entry.workspace_checks
+
+      assert {:ok, expected_workspace_path} =
+               SymphonyElixir.PathSafety.canonicalize(Path.join(test_root, "OCL-KANEO-8"))
+
+      assert workspace_path == expected_workspace_path
+
+      report = SymphonyElixir.ResumeAudit.format_report([entry])
+      assert report =~ "Source of truth: tracker tasks in active states"
+      assert report =~ "OCL-KANEO-8 [In Progress]"
+      assert report =~ "action: resume preserved workspace"
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "restart resume audit covers dispatch, remote, and malformed tracker entries" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-resume-audit-branches-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        workspace_root: test_root,
+        tracker_active_states: ["to-do", "in-progress"]
+      )
+
+      assert {:error, :tracker_down} =
+               SymphonyElixir.ResumeAudit.entries(issue_fetcher: fn -> {:error, :tracker_down} end)
+
+      empty_report = SymphonyElixir.ResumeAudit.format_report([])
+      assert empty_report =~ "No active task-backed work found."
+
+      issue_map = %{
+        "id" => "issue-map",
+        "identifier" => "OCL-KANEO-9",
+        "title" => "Map payload",
+        "state" => "to-do"
+      }
+
+      assert {:ok, [dispatch_entry]} =
+               SymphonyElixir.ResumeAudit.entries(
+                 issue_fetcher: fn -> {:ok, [issue_map]} end,
+                 worker_hosts: :invalid,
+                 workspace_exists?: fn _workspace -> false end
+               )
+
+      assert dispatch_entry.resume_action == "dispatch active task into a workspace"
+
+      dispatch_report = SymphonyElixir.ResumeAudit.format_report([dispatch_entry])
+      assert dispatch_report =~ "OCL-KANEO-9 [to-do]"
+      assert dispatch_report =~ "exists=no"
+
+      assert {:ok, [remote_entry]} =
+               SymphonyElixir.ResumeAudit.entries(
+                 issue_fetcher: fn -> {:ok, [:unexpected_payload]} end,
+                 worker_hosts: ["builder.example"],
+                 workspace_exists?: fn _workspace -> flunk("remote audit must not stat locally") end
+               )
+
+      assert remote_entry.resume_action ==
+               "redispatch active task; remote workspace presence unchecked"
+
+      remote_report = SymphonyElixir.ResumeAudit.format_report([remote_entry])
+      assert remote_report =~ "builder.example:"
+      assert remote_report =~ "exists=unknown"
+
+      assert {:ok, [error_entry]} =
+               SymphonyElixir.ResumeAudit.entries(issue_fetcher: fn -> {:ok, [%Issue{identifier: 123, title: "Bad identifier"}]} end)
+
+      assert [%{path: nil, exists?: false, error: %FunctionClauseError{}}] = error_entry.workspace_checks
+      assert error_entry.resume_action == "dispatch active task into a workspace"
+      assert SymphonyElixir.ResumeAudit.format_report([error_entry]) =~ "local: error="
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "restart resume audit mix task prints reports and raises fetch failures" do
+    previous_memory_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "memory",
+        tracker_active_states: ["to-do"]
+      )
+
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, [])
+      Mix.Task.reenable("symphony.resume_audit")
+
+      output =
+        ExUnit.CaptureIO.capture_io(fn ->
+          Mix.Tasks.Symphony.ResumeAudit.run([])
+        end)
+
+      assert output =~ "Symphony restart/resume audit"
+      assert output =~ "No active task-backed work found."
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        tracker_kind: "kaneo",
+        tracker_api_token: nil,
+        tracker_project_id: nil
+      )
+
+      Mix.Task.reenable("symphony.resume_audit")
+
+      assert_raise Mix.Error, ~r/Unable to build restart\/resume audit/, fn ->
+        Mix.Tasks.Symphony.ResumeAudit.run([])
+      end
+    after
+      restore_app_env(:memory_tracker_issues, previous_memory_issues)
+    end
+  end
+
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
 

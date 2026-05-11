@@ -145,7 +145,7 @@ defmodule SymphonyElixir.Kaneo.Client do
         query = [status: state_name, sortBy: "priority", sortOrder: "asc"]
 
         case request(:get, "/task/tasks/#{URI.encode(project_id)}", params: query) do
-          {:ok, %{body: body}} ->
+          {:ok, %{status: status, body: body}} when status in 200..299 ->
             fetched_issues =
               body
               |> flatten_tasks_response()
@@ -153,6 +153,9 @@ defmodule SymphonyElixir.Kaneo.Client do
               |> Enum.reject(&is_nil/1)
 
             {:cont, {:ok, fetched_issues ++ issues}}
+
+          {:ok, %{status: status}} ->
+            {:halt, {:error, {:kaneo_api_status, status}}}
 
           {:error, reason} ->
             {:halt, {:error, reason}}
@@ -389,7 +392,7 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp task_workflow_file(task), do: task_routing_value(task, ["workflow_file", "workflow"])
 
   defp select_project_repos(task, project) do
-    repos = project.repos || []
+    repos = project_repos(project.repos)
     explicit_url = task_source_repo_url(task)
 
     selected_repos =
@@ -414,6 +417,9 @@ defmodule SymphonyElixir.Kaneo.Client do
     |> Enum.map(&normalize_selected_repo(&1, task, project))
     |> Enum.reject(&(repo_value(&1, "repo_url") == nil))
   end
+
+  defp project_repos(repos) when is_list(repos), do: repos
+  defp project_repos(_repos), do: []
 
   defp repo_for_explicit_url(task, project) do
     %{
@@ -461,20 +467,21 @@ defmodule SymphonyElixir.Kaneo.Client do
       |> Enum.join("\n")
       |> String.downcase()
 
-    Enum.filter(repos, fn repo ->
-      repo_key = repo_value(repo, "key")
-      repo_name = repo_value(repo, "name")
-
-      Enum.any?([repo_key, repo_name], fn value ->
-        case normalize_repo_search_term(value) do
-          nil -> false
-          term -> String.contains?(task_text, term)
-        end
-      end)
-    end)
+    Enum.filter(repos, &repo_matches_task_text?(&1, task_text))
   end
 
-  defp infer_repos_from_task_text(_task, _repos), do: []
+  defp repo_matches_task_text?(repo, task_text) do
+    repo_terms = [repo_value(repo, "key"), repo_value(repo, "name")]
+
+    Enum.any?(repo_terms, &repo_search_term_matches?(&1, task_text))
+  end
+
+  defp repo_search_term_matches?(value, task_text) do
+    case normalize_repo_search_term(value) do
+      nil -> false
+      term -> String.contains?(task_text, term)
+    end
+  end
 
   defp normalize_repo_search_term(value) when is_binary(value) do
     value

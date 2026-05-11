@@ -228,6 +228,25 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
 
     assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert {:ok, [issue]} = KaneoClient.fetch_issue_states_by_ids(["task-a"])
+    assert issue.id == "task-a"
+    assert issue.identifier == "ALPHA-KANEO-1"
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "done", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "done", sortBy: "priority", sortOrder: "asc"]}
+
+    assert {:ok, planned_issues} = KaneoClient.fetch_issues_by_states(["planned", " "])
+    assert Enum.map(planned_issues, & &1.identifier) == ["ALPHA-KANEO-1", "BETA-KANEO-1"]
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "planned", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "planned", sortBy: "priority", sortOrder: "asc"]}
   end
 
   test "flattens Kaneo column task responses" do
@@ -303,6 +322,22 @@ defmodule SymphonyElixir.KaneoClientTest do
 
     assert_receive {:kaneo_request, :post, "https://kaneo.test/api/activity/comment", %{taskId: "task-ok", comment: "body"}, headers}
     assert {"Authorization", "Bearer token"} in headers
+  end
+
+  test "Kaneo task fetch returns an error for non-success statuses" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a",
+      tracker_active_states: ["to-do"]
+    )
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn _opts ->
+      {:ok, %Req.Response{status: 401, body: "Unauthorized"}}
+    end)
+
+    assert {:error, {:kaneo_api_status, 401}} = KaneoClient.fetch_candidate_issues()
   end
 
   test "covers Kaneo fetch error and config edge cases" do
@@ -450,11 +485,36 @@ defmodule SymphonyElixir.KaneoClientTest do
 
     assert blank_assignee_issue.assigned_to_worker
 
+    matching_assignee_issue =
+      KaneoClient.normalize_task_for_test(
+        %{"id" => "matching-assignee", "userId" => " user-1 "},
+        %{id: "project-a", assignee: "user-1"}
+      )
+
+    assert matching_assignee_issue.assigned_to_worker
+
+    unassigned_issue =
+      KaneoClient.normalize_task_for_test(
+        %{"id" => "unassigned"},
+        %{id: "project-a", assignee: "user-1"}
+      )
+
+    assert unassigned_issue.assigned_to_worker
+
     legacy_issue =
       KaneoClient.normalize_task_for_test(%{"id" => "legacy-task", "title" => "Legacy"}, %{legacy?: true})
 
     assert legacy_issue.identifier == "legacy-task"
     assert legacy_issue.project_key == nil
+
+    invalid_repos_issue =
+      KaneoClient.normalize_task_for_test(%{"id" => "invalid-repos", "title" => "Fallback"}, %{
+        id: "project-a",
+        repo_url: "git@example.com:project/repo.git",
+        repos: :invalid
+      })
+
+    assert invalid_repos_issue.source_repo_url == "git@example.com:project/repo.git"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "kaneo",
