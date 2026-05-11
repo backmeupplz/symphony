@@ -2,7 +2,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   use SymphonyElixir.TestSupport
   alias Ecto.Changeset
   alias SymphonyElixir.Config.Schema
-  alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
+  alias SymphonyElixir.Config.Schema.{Codex, Server, StringOrMap}
   alias SymphonyElixir.Linear.Client
 
   test "workspace bootstrap can be implemented in after_create hook" do
@@ -1055,6 +1055,9 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert {:ok, %{"a" => 1}} = StringOrMap.dump(%{"a" => 1})
     assert :error = StringOrMap.dump(123)
+
+    assert Server.changeset(%Server{}, %{port: 0, host: "0.0.0.0"}).valid?
+    refute Server.changeset(%Server{}, %{port: -1}).valid?
 
     assert Schema.normalize_state_limits(nil) == %{}
 
