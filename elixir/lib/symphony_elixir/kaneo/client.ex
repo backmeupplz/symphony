@@ -392,7 +392,7 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp task_workflow_file(task), do: task_routing_value(task, ["workflow_file", "workflow"])
 
   defp select_project_repos(task, project) do
-    repos = project.repos || []
+    repos = project_repos(project.repos)
     explicit_url = task_source_repo_url(task)
 
     selected_repos =
@@ -417,6 +417,9 @@ defmodule SymphonyElixir.Kaneo.Client do
     |> Enum.map(&normalize_selected_repo(&1, task, project))
     |> Enum.reject(&(repo_value(&1, "repo_url") == nil))
   end
+
+  defp project_repos(repos) when is_list(repos), do: repos
+  defp project_repos(_repos), do: []
 
   defp repo_for_explicit_url(task, project) do
     %{
@@ -466,8 +469,6 @@ defmodule SymphonyElixir.Kaneo.Client do
 
     Enum.filter(repos, &repo_matches_task_text?(&1, task_text))
   end
-
-  defp infer_repos_from_task_text(_task, _repos), do: []
 
   defp repo_matches_task_text?(repo, task_text) do
     repo_terms = [repo_value(repo, "key"), repo_value(repo, "name")]

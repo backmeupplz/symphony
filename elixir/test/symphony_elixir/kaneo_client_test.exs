@@ -228,6 +228,18 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
 
     assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert {:ok, [issue]} = KaneoClient.fetch_issue_states_by_ids(["task-a"])
+    assert issue.id == "task-a"
+    assert issue.identifier == "ALPHA-KANEO-1"
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "done", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "done", sortBy: "priority", sortOrder: "asc"]}
   end
 
   test "flattens Kaneo column task responses" do
@@ -466,11 +478,28 @@ defmodule SymphonyElixir.KaneoClientTest do
 
     assert blank_assignee_issue.assigned_to_worker
 
+    matching_assignee_issue =
+      KaneoClient.normalize_task_for_test(
+        %{"id" => "matching-assignee", "userId" => " user-1 "},
+        %{id: "project-a", assignee: "user-1"}
+      )
+
+    assert matching_assignee_issue.assigned_to_worker
+
     legacy_issue =
       KaneoClient.normalize_task_for_test(%{"id" => "legacy-task", "title" => "Legacy"}, %{legacy?: true})
 
     assert legacy_issue.identifier == "legacy-task"
     assert legacy_issue.project_key == nil
+
+    invalid_repos_issue =
+      KaneoClient.normalize_task_for_test(%{"id" => "invalid-repos", "title" => "Fallback"}, %{
+        id: "project-a",
+        repo_url: "git@example.com:project/repo.git",
+        repos: :invalid
+      })
+
+    assert invalid_repos_issue.source_repo_url == "git@example.com:project/repo.git"
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "kaneo",

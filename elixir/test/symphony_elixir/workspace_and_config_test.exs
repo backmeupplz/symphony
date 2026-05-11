@@ -1118,6 +1118,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert settings.tracker.api_key == "fallback-linear-token"
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+
+    assert {:ok, settings} =
+             Schema.parse(%{
+               tracker: %{
+                 kind: "kaneo",
+                 projects: [
+                   %{
+                     id: "project-a",
+                     repos: [
+                       %{key: " ", name: "", repo_url: "git@example.com:project/repo.git"}
+                     ]
+                   }
+                 ]
+               }
+             })
+
+    assert [%{"repo_url" => "git@example.com:project/repo.git", "default" => false}] =
+             settings.tracker.projects |> List.first() |> Map.fetch!(:repos)
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do
