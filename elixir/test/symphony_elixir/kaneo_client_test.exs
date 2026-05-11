@@ -240,6 +240,13 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
 
     assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "done", sortBy: "priority", sortOrder: "asc"]}
+
+    assert {:ok, planned_issues} = KaneoClient.fetch_issues_by_states(["planned", " "])
+    assert Enum.map(planned_issues, & &1.identifier) == ["ALPHA-KANEO-1", "BETA-KANEO-1"]
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "planned", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "planned", sortBy: "priority", sortOrder: "asc"]}
   end
 
   test "flattens Kaneo column task responses" do
@@ -485,6 +492,14 @@ defmodule SymphonyElixir.KaneoClientTest do
       )
 
     assert matching_assignee_issue.assigned_to_worker
+
+    unassigned_issue =
+      KaneoClient.normalize_task_for_test(
+        %{"id" => "unassigned"},
+        %{id: "project-a", assignee: "user-1"}
+      )
+
+    assert unassigned_issue.assigned_to_worker
 
     legacy_issue =
       KaneoClient.normalize_task_for_test(%{"id" => "legacy-task", "title" => "Legacy"}, %{legacy?: true})
