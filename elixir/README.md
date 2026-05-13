@@ -152,6 +152,9 @@ codex:
   reload error until the file is fixed.
 - `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
   `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- The same Phoenix server can expose a small authenticated realtime project activity stream at
+  `/activity/v1/events` and `/activity/v1/stream`; see
+  [docs/activity_stream.md](docs/activity_stream.md).
 
 ### Restart and Resume Audit
 

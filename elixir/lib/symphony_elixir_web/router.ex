@@ -29,6 +29,10 @@ defmodule SymphonyElixirWeb.Router do
 
   scope "/", SymphonyElixirWeb do
     get("/api/v1/state", ObservabilityApiController, :state)
+    get("/activity/v1/health", ActivityStreamController, :health)
+    post("/activity/v1/events", ActivityStreamController, :submit)
+    options("/activity/v1/events", ActivityStreamController, :options)
+    get("/activity/v1/stream", ActivityStreamController, :stream)
 
     match(:*, "/", ObservabilityApiController, :method_not_allowed)
     match(:*, "/api/v1/state", ObservabilityApiController, :method_not_allowed)

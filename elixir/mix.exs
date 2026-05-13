@@ -24,6 +24,8 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.Codex.DynamicTool,
           SymphonyElixir.HttpServer,
           SymphonyElixir.StatusDashboard,
+          SymphonyElixirWeb.ActivityStreamController,
+          SymphonyElixirWeb.ActivityStreamSocket,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,
           SymphonyElixirWeb.DashboardLive,
