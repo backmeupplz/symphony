@@ -73,7 +73,7 @@ hooks:
     fi
   before_remove: |
     if [ -f elixir/mix.exs ]; then
-      cd elixir && mise exec -- mix workspace.before_remove
+      cd elixir && mise exec -- mix workspace.before_remove && mise exec -- mix workspace.before_remove --reconcile-merged --limit 50
       cd ..
     fi
 
@@ -295,6 +295,9 @@ When the task is `in-review`:
   When OpenClaw or a human owns the merge, include branch deletion in the handoff checklist and verify
   the remote branch is gone; if cleanup is still needed, delete only the merged PR head ref with
   `gh api --method DELETE repos/{owner}/{repo}/git/refs/heads/<branch>`.
+- Terminal workspace cleanup also runs `mix workspace.before_remove --reconcile-merged --limit 50`
+  to find recent already-merged same-repo PRs whose safe source branches still exist, skipping forks,
+  default/protected branches, and branches that still have an open same-repo PR.
 - Never delete default/protected branches or a branch with an open PR; treat GitHub 403/404/422 deletion
   responses as safe failures to document instead of widening the deletion target.
 - After branch cleanup is verified or safely skipped, move the issue to `done`.

@@ -14,15 +14,22 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
       mix workspace.before_remove
       mix workspace.before_remove --branch feature/my-branch
       mix workspace.before_remove --repo openai/symphony
+      mix workspace.before_remove --reconcile-merged --limit 50
+
+  `--reconcile-merged` scans a bounded set of recent merged pull requests and
+  deletes lingering same-repository head branches when the branch is not default,
+  protected, from a fork, or still associated with an open same-repository PR.
   """
 
-  @default_repo "openai/symphony"
+  @fallback_repo "openai/symphony"
+  @pr_json_fields "number,headRefName,headRepository,headRepositoryOwner,isCrossRepository"
+  @default_reconcile_limit 50
 
   @impl Mix.Task
   def run(args) do
     {opts, _argv, invalid} =
       OptionParser.parse(args,
-        strict: [branch: :string, help: :boolean, repo: :string],
+        strict: [branch: :string, help: :boolean, limit: :integer, reconcile_merged: :boolean, repo: :string],
         aliases: [h: :help]
       )
 
@@ -34,10 +41,14 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         Mix.raise("Invalid option(s): #{inspect(invalid)}")
 
       true ->
-        repo = opts[:repo] || @default_repo
+        repo = opts[:repo] || current_repo() || @fallback_repo
         branch = opts[:branch] || current_branch()
 
-        maybe_close_open_pull_requests(repo, branch)
+        if opts[:reconcile_merged] do
+          reconcile_merged_branches(repo, opts[:limit] || @default_reconcile_limit)
+        else
+          maybe_close_open_pull_requests(repo, branch)
+        end
     end
   end
 
@@ -90,19 +101,32 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
   defp maybe_delete_merged_branch(_repo, _branch, [_pr_number | _rest]), do: :ok
 
   defp maybe_delete_merged_branch(repo, branch, []) do
-    case list_pull_request_numbers(repo, branch, "merged") do
+    case list_pull_requests(repo, state: "merged", head: branch) do
       [] ->
         :ok
 
-      merged_pr_numbers ->
-        delete_merged_branch_if_safe(repo, branch, merged_pr_numbers)
+      merged_prs ->
+        delete_merged_branch_if_safe(repo, branch, merged_prs)
     end
   end
 
-  defp delete_merged_branch_if_safe(repo, branch, merged_pr_numbers) do
+  defp delete_merged_branch_if_safe(repo, branch, merged_prs) do
+    same_repo_prs = Enum.filter(merged_prs, &same_repo_head?(&1, repo, branch))
+
+    if same_repo_prs == [] do
+      Mix.shell().info("Skipped deleting remote branch #{branch}: merged PR head is from a fork or different repository")
+    else
+      do_delete_merged_branch_if_safe(repo, branch, same_repo_prs)
+    end
+  end
+
+  defp do_delete_merged_branch_if_safe(repo, branch, merged_prs) do
     case branch_deletion_safety(repo, branch) do
       :safe ->
-        delete_remote_branch(repo, branch, merged_pr_numbers)
+        delete_remote_branch(repo, branch, merged_prs)
+
+      {:skip, :already_deleted} ->
+        Mix.shell().info("Skipped deleting remote branch #{branch}: remote branch already deleted")
 
       {:skip, reason} ->
         Mix.shell().error("Skipped deleting remote branch #{branch}: #{reason}")
@@ -120,6 +144,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
     else
       :default -> {:skip, "default branch"}
       :protected -> {:skip, "protected branch"}
+      :missing -> {:skip, :already_deleted}
       {:unknown, check} -> {:skip, "could not verify #{check}"}
     end
   end
@@ -139,28 +164,128 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
       {:ok, output} ->
         if String.trim(output) == "true", do: :protected, else: :not_protected
 
-      {:error, _reason} ->
-        {:unknown, "branch protection"}
+      {:error, {_status, output}} ->
+        if missing_branch_output?(output), do: :missing, else: {:unknown, "branch protection"}
     end
   end
 
-  defp delete_remote_branch(repo, branch, merged_pr_numbers) do
+  defp delete_remote_branch(repo, branch, merged_prs) do
     case run_command("gh", ["api", "--method", "DELETE", "repos/#{repo}/git/refs/heads/#{branch}"]) do
       {:ok, _output} ->
-        Mix.shell().info("Deleted remote branch #{branch} after merged PR #{format_pr_numbers(merged_pr_numbers)}")
+        Mix.shell().info("Deleted remote branch #{branch} after merged PR #{format_pr_numbers(merged_prs)}")
 
       {:error, {status, output}} ->
         trimmed_output = String.trim(output)
 
-        Mix.shell().error("Failed to delete remote branch #{branch}: exit #{status}#{format_output(trimmed_output)}")
+        if status == 1 and missing_branch_output?(trimmed_output) do
+          Mix.shell().info("Skipped deleting remote branch #{branch}: remote branch already deleted")
+        else
+          Mix.shell().error("Failed to delete remote branch #{branch}: exit #{status}#{format_output(trimmed_output)}")
+        end
     end
+  end
+
+  defp reconcile_merged_branches(repo, limit) when is_integer(limit) and limit > 0 do
+    if gh_available?() and gh_authenticated?() do
+      repo
+      |> list_pull_requests(state: "merged", limit: limit)
+      |> Enum.group_by(&Map.get(&1, "headRefName"))
+      |> Enum.each(&reconcile_merged_branch_group(repo, &1))
+    end
+
+    :ok
+  end
+
+  defp reconcile_merged_branches(_repo, _limit), do: :ok
+
+  defp reconcile_merged_branch_group(repo, {branch, prs}) when is_binary(branch) and branch != "" do
+    if branch_has_same_repo_open_pr?(repo, branch) do
+      Mix.shell().error("Skipped deleting remote branch #{branch}: branch still has an open pull request")
+    else
+      delete_merged_branch_if_safe(repo, branch, prs)
+    end
+  end
+
+  defp reconcile_merged_branch_group(_repo, {_branch, _prs}), do: :ok
+
+  defp branch_has_same_repo_open_pr?(repo, branch) do
+    repo
+    |> list_pull_requests(state: "open", head: branch)
+    |> Enum.any?(&same_repo_head?(&1, repo, branch))
+  end
+
+  defp list_pull_requests(repo, opts) do
+    state = Keyword.fetch!(opts, :state)
+    head = Keyword.get(opts, :head)
+    limit = Keyword.get(opts, :limit)
+
+    args =
+      ["pr", "list", "--repo", repo]
+      |> maybe_append_head(head)
+      |> Kernel.++(["--state", state, "--json", @pr_json_fields])
+      |> maybe_append_limit(limit)
+
+    case run_command("gh", args) do
+      {:ok, output} ->
+        case Jason.decode(output) do
+          {:ok, prs} when is_list(prs) -> prs
+          _ -> []
+        end
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp maybe_append_head(args, head) when is_binary(head) and head != "", do: args ++ ["--head", head]
+  defp maybe_append_head(args, _head), do: args
+
+  defp maybe_append_limit(args, limit) when is_integer(limit) and limit > 0, do: args ++ ["--limit", Integer.to_string(limit)]
+  defp maybe_append_limit(args, _limit), do: args
+
+  defp same_repo_head?(pr, repo, branch) when is_map(pr) and is_binary(repo) do
+    Map.get(pr, "headRefName") == branch and Map.get(pr, "isCrossRepository") != true and
+      normalize_repo_name(head_repo_name(pr)) == normalize_repo_name(repo)
+  end
+
+  defp same_repo_head?(_pr, _repo, _branch), do: false
+
+  defp head_repo_name(pr) do
+    case Map.get(pr, "headRepository") do
+      %{"nameWithOwner" => name_with_owner} when is_binary(name_with_owner) and name_with_owner != "" ->
+        name_with_owner
+
+      %{"owner" => %{"login" => owner}, "name" => name} when is_binary(owner) and is_binary(name) ->
+        owner <> "/" <> name
+
+      %{"name" => name} when is_binary(name) ->
+        owner = get_in(pr, ["headRepositoryOwner", "login"])
+        if is_binary(owner), do: owner <> "/" <> name, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp normalize_repo_name(repo) when is_binary(repo) do
+    repo
+    |> String.trim()
+    |> String.trim_trailing(".git")
+    |> String.downcase()
+  end
+
+  defp normalize_repo_name(_repo), do: nil
+
+  defp missing_branch_output?(output) when is_binary(output) do
+    normalized = String.downcase(output)
+    String.contains?(normalized, "not found") or String.contains?(normalized, "http 404")
   end
 
   defp encode_path_segment(value) do
     URI.encode(value, &URI.char_unreserved?/1)
   end
 
-  defp format_pr_numbers(numbers), do: numbers |> Enum.map_join(", ", &"##{&1}")
+  defp format_pr_numbers(prs), do: prs |> Enum.map_join(", ", &"##{Map.get(&1, "number")}")
 
   defp close_pull_request(repo, branch, pr_number) do
     case run_command("gh", [
@@ -198,6 +323,27 @@ defmodule Mix.Tasks.Workspace.BeforeRemove do
         end
 
       {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp current_repo do
+    with {:ok, output} <- run_command("git", ["remote", "get-url", "origin"]),
+         repo when is_binary(repo) <- repo_name_from_remote_url(String.trim(output)) do
+      repo
+    else
+      _ -> nil
+    end
+  end
+
+  defp repo_name_from_remote_url(""), do: nil
+
+  defp repo_name_from_remote_url(url) do
+    case Regex.run(~r{github\.com[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$}, url) do
+      [_url, _owner, _repo] = match ->
+        match |> Enum.drop(1) |> Enum.join("/")
+
+      _ ->
         nil
     end
   end

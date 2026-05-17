@@ -42,7 +42,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
     with_path([], fn ->
       output =
         capture_io(fn ->
-          BeforeRemove.run(["--branch", "feature/no-gh"])
+          BeforeRemove.run(["--branch", "feature/no-gh", "--repo", "openai/symphony"])
         end)
 
       assert output == ""
@@ -106,7 +106,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
       {output, error_output} =
         capture_task_output(fn ->
-          BeforeRemove.run(["--branch", "feature/workpad"])
+          BeforeRemove.run(["--branch", "feature/workpad", "--repo", "openai/symphony"])
         end)
 
       assert output =~ "Closed PR #101 for branch feature/workpad"
@@ -123,7 +123,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       {second_output, error_output} =
         capture_task_output(fn ->
           Mix.Task.reenable("workspace.before_remove")
-          BeforeRemove.run(["--branch", "feature/workpad"])
+          BeforeRemove.run(["--branch", "feature/workpad", "--repo", "openai/symphony"])
         end)
 
       assert second_output =~ "Closed PR #101 for branch feature/workpad"
@@ -156,7 +156,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         error_output =
           capture_io(:stderr, fn ->
             Mix.Task.reenable("workspace.before_remove")
-            BeforeRemove.run(["--branch", "feature/no-output"])
+            BeforeRemove.run(["--branch", "feature/no-output", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~ "Failed to close PR #102 for branch feature/no-output: exit 17"
@@ -183,7 +183,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '201\n202\n'
+        printf '%s\n' '[{"number":201,"headRefName":"feature/merged","headRepository":{"name":"symphony","nameWithOwner":""},"headRepositoryOwner":{"login":"openai"},"isCrossRepository":false},{"number":202,"headRefName":"feature/merged","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -206,7 +206,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         output =
           capture_io(fn ->
-            BeforeRemove.run(["--branch", "feature/merged"])
+            BeforeRemove.run(["--branch", "feature/merged", "--repo", "openai/symphony"])
           end)
 
         assert output =~ "Deleted remote branch feature/merged after merged PR #201, #202"
@@ -217,6 +217,217 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
         assert log =~ "repo view openai/symphony --json defaultBranchRef --jq .defaultBranchRef.name"
         assert log =~ "api repos/openai/symphony/branches/feature%2Fmerged --jq .protected"
         assert log =~ "api --method DELETE repos/openai/symphony/git/refs/heads/feature/merged"
+      end
+    )
+  end
+
+  test "uses the origin remote repository when repo option is omitted" do
+    with_fake_gh_and_git(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      """
+      #!/bin/sh
+      if [ "$1" = "remote" ] && [ "$2" = "get-url" ] && [ "$3" = "origin" ]; then
+        printf 'git@github.com:backmeupplz/symphony.git\n'
+        exit 0
+      fi
+
+      if [ "$1" = "branch" ] && [ "$2" = "--show-current" ]; then
+        printf 'feature/repo-detect\n'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run([])
+          end)
+
+        assert output == ""
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo backmeupplz/symphony --head feature/repo-detect --state open"
+        assert log =~ "pr list --repo backmeupplz/symphony --head feature/repo-detect --state merged"
+      end
+    )
+  end
+
+  test "skips fork merged pull request branches" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '%s\n' '[{"number":901,"headRefName":"feature/fork","headRepository":{"nameWithOwner":"someone/symphony"},"isCrossRepository":true}]'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/fork", "--repo", "openai/symphony"])
+          end)
+
+        assert output =~ "Skipped deleting remote branch feature/fork: merged PR head is from a fork or different repository"
+
+        log = File.read!(log_path)
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "treats an already-deleted remote branch as a safe skip" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '%s\n' '[{"number":902,"headRefName":"feature/gone","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Fgone" ]; then
+        printf 'HTTP 404: Not Found\n' >&2
+        exit 1
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/gone", "--repo", "openai/symphony"])
+          end)
+
+        assert output =~ "Skipped deleting remote branch feature/gone: remote branch already deleted"
+
+        log = File.read!(log_path)
+        assert log =~ "api repos/openai/symphony/branches/feature%2Fgone --jq .protected"
+        refute log =~ "api --method DELETE"
+      end
+    )
+  end
+
+  test "treats a delete-time missing branch as a safe race" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '%s\n' '[{"number":903,"headRefName":"feature/race","headRepository":{"owner":{"login":"openai"},"name":"symphony"},"isCrossRepository":false}]'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Frace" ]; then
+        printf 'false\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "DELETE" ]; then
+        printf 'HTTP 404: Not Found\n' >&2
+        exit 1
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/race", "--repo", "openai/symphony"])
+          end)
+
+        assert output =~ "Skipped deleting remote branch feature/race: remote branch already deleted"
+
+        log = File.read!(log_path)
+        assert log =~ "api --method DELETE repos/openai/symphony/git/refs/heads/feature/race"
+      end
+    )
+  end
+
+  test "skips malformed or incomplete merged pull request metadata" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
+        printf '%s\n' '[null,{"number":904,"headRefName":"feature/no-repo","headRepository":null,"isCrossRepository":false}]'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--branch", "feature/no-repo", "--repo", "openai/symphony"])
+          end)
+
+        assert output =~ "Skipped deleting remote branch feature/no-repo: merged PR head is from a fork or different repository"
+
+        log = File.read!(log_path)
+        refute log =~ "api --method DELETE"
       end
     )
   end
@@ -236,7 +447,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '301\n'
+        printf '%s\n' '[{"number":301,"headRefName":"main","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -245,7 +456,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         error_output =
           capture_io(:stderr, fn ->
-            BeforeRemove.run(["--branch", "main"])
+            BeforeRemove.run(["--branch", "main", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~ "Skipped deleting remote branch main: protected/default branch name"
@@ -272,7 +483,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '401\n'
+        printf '%s\n' '[{"number":401,"headRefName":"feature/unknown","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -282,7 +493,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Funknown" ]; then
-        printf 'not found\n' >&2
+        printf 'api unavailable\n' >&2
         exit 1
       fi
 
@@ -291,7 +502,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         error_output =
           capture_io(:stderr, fn ->
-            BeforeRemove.run(["--branch", "feature/unknown"])
+            BeforeRemove.run(["--branch", "feature/unknown", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~ "Skipped deleting remote branch feature/unknown: could not verify branch protection"
@@ -318,7 +529,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '501\n'
+        printf '%s\n' '[{"number":501,"headRefName":"release/current","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -332,7 +543,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         error_output =
           capture_io(:stderr, fn ->
-            BeforeRemove.run(["--branch", "release/current"])
+            BeforeRemove.run(["--branch", "release/current", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~ "Skipped deleting remote branch release/current: default branch"
@@ -360,7 +571,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '601\n'
+        printf '%s\n' '[{"number":601,"headRefName":"feature/default-unknown","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -374,7 +585,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         error_output =
           capture_io(:stderr, fn ->
-            BeforeRemove.run(["--branch", "feature/default-unknown"])
+            BeforeRemove.run(["--branch", "feature/default-unknown", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~ "Skipped deleting remote branch feature/default-unknown: could not verify default branch"
@@ -402,7 +613,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '701\n'
+        printf '%s\n' '[{"number":701,"headRefName":"release/protected","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -421,7 +632,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         error_output =
           capture_io(:stderr, fn ->
-            BeforeRemove.run(["--branch", "release/protected"])
+            BeforeRemove.run(["--branch", "release/protected", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~ "Skipped deleting remote branch release/protected: protected branch"
@@ -448,7 +659,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fi
 
       if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "merged" ]; then
-        printf '801\n802\n'
+        printf '%s\n' '[{"number":801,"headRefName":"feature/delete-fails","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false},{"number":802,"headRefName":"feature/delete-fails","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
         exit 0
       fi
 
@@ -472,7 +683,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         error_output =
           capture_io(:stderr, fn ->
-            BeforeRemove.run(["--branch", "feature/delete-fails"])
+            BeforeRemove.run(["--branch", "feature/delete-fails", "--repo", "openai/symphony"])
           end)
 
         assert error_output =~
@@ -480,6 +691,108 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
 
         log = File.read!(log_path)
         assert log =~ "api --method DELETE repos/openai/symphony/git/refs/heads/feature/delete-fails"
+      end
+    )
+  end
+
+  test "reconciles lingering merged same-repo branches with bounded safe skips" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$6" = "merged" ]; then
+        printf '%s\n' '[{"number":910,"headRefName":"feature/reconcile","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false},{"number":911,"headRefName":"feature/fork-reconcile","headRepository":{"nameWithOwner":"someone/symphony"},"isCrossRepository":true},{"number":912,"headRefName":"feature/open-reconcile","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ] && [ "$6" = "feature/open-reconcile" ]; then
+        printf '%s\n' '[{"number":913,"headRefName":"feature/open-reconcile","headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$8" = "open" ]; then
+        printf '[]\n'
+        exit 0
+      fi
+
+      if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+        printf 'main\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "repos/openai/symphony/branches/feature%2Freconcile" ]; then
+        printf 'false\n'
+        exit 0
+      fi
+
+      if [ "$1" = "api" ] && [ "$2" = "--method" ] && [ "$3" = "DELETE" ]; then
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        {output, error_output} =
+          capture_task_output(fn ->
+            BeforeRemove.run(["--reconcile-merged", "--limit", "3", "--repo", "openai/symphony"])
+          end)
+
+        assert output =~ "Deleted remote branch feature/reconcile after merged PR #910"
+        assert output =~ "Skipped deleting remote branch feature/fork-reconcile: merged PR head is from a fork or different repository"
+        assert error_output =~ "Skipped deleting remote branch feature/open-reconcile: branch still has an open pull request"
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo openai/symphony --state merged"
+        assert log =~ "--limit 3"
+        assert log =~ "api --method DELETE repos/openai/symphony/git/refs/heads/feature/reconcile"
+        refute log =~ "git/refs/heads/feature/fork-reconcile"
+        refute log =~ "git/refs/heads/feature/open-reconcile"
+      end
+    )
+  end
+
+  test "reconcile ignores invalid limits and malformed branch groups" do
+    with_fake_gh(
+      """
+      #!/bin/sh
+      printf '%s\n' "$*" >> "$GH_LOG"
+
+      if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+        exit 0
+      fi
+
+      if [ "$1" = "pr" ] && [ "$2" = "list" ] && [ "$6" = "merged" ]; then
+        printf '%s\n' '[{"number":920,"headRefName":null,"headRepository":{"nameWithOwner":"openai/symphony"},"isCrossRepository":false}]'
+        exit 0
+      fi
+
+      exit 99
+      """,
+      fn log_path ->
+        output =
+          capture_io(fn ->
+            BeforeRemove.run(["--reconcile-merged", "--limit", "1", "--repo", "openai/symphony"])
+          end)
+
+        assert output == ""
+
+        Mix.Task.reenable("workspace.before_remove")
+
+        invalid_limit_output =
+          capture_io(fn ->
+            BeforeRemove.run(["--reconcile-merged", "--limit", "0", "--repo", "openai/symphony"])
+          end)
+
+        assert invalid_limit_output == ""
+
+        log = File.read!(log_path)
+        assert log =~ "pr list --repo openai/symphony --state merged"
+        refute log =~ "api --method DELETE"
       end
     )
   end
@@ -503,7 +816,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       fn log_path ->
         output =
           capture_io(fn ->
-            BeforeRemove.run(["--branch", "feature/list-fails"])
+            BeforeRemove.run(["--branch", "feature/list-fails", "--repo", "openai/symphony"])
           end)
 
         assert output == ""
@@ -562,7 +875,7 @@ defmodule Mix.Tasks.Workspace.BeforeRemoveTest do
       exit 99
       """,
       fn log_path ->
-        BeforeRemove.run(["--branch", "feature/no-auth"])
+        BeforeRemove.run(["--branch", "feature/no-auth", "--repo", "openai/symphony"])
 
         log = File.read!(log_path)
         assert log =~ "auth status"
