@@ -9,12 +9,18 @@ Apple Events" setting.
 Launch a dedicated Chrome QA profile with the Chrome DevTools Protocol enabled:
 
 ```sh
+HOME=/Users/borodutch \
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-address=127.0.0.1 \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/Library/Application Support/Symphony/telegram-web-qa-chrome" \
   "https://web.telegram.org/k/#@okamikron_bot"
 ```
+
+OpenClaw/Codex sessions can have `HOME` set to an agent sandbox. Always launch Chrome with
+`HOME=/Users/borodutch` for logged-in QA profiles so Chrome uses the real macOS login keychain and
+does not show "A keychain cannot be found to store Chrome" prompts. For disposable profiles that do
+not need existing encrypted cookies or extension state, adding `--use-mock-keychain` is acceptable.
 
 The profile must be logged in to Telegram Web once before unattended QA. Keep it dedicated to QA so
 remote debugging is not enabled on a personal browsing profile.

@@ -168,6 +168,8 @@ For Telegram bots, prefer the repo-supported Telegram Web CDP path documented in
 use a dedicated logged-in Chrome QA profile launched with remote debugging, then run the helper to
 send and verify a timestamped message to the target bot. Do not use Peekaboo, AppleScript JavaScript
 execution, or Chrome's disabled "Allow JavaScript from Apple Events" path for Telegram Web QA.
+When launching Chrome from OpenClaw/Codex, set `HOME=/Users/borodutch` so Chrome uses the real
+macOS login keychain; for disposable throwaway profiles only, `--use-mock-keychain` may be added.
 
 If the repository/task also supports scripted bot validation and the required bot token is available
 in the environment (for example `TELEGRAM_TEST_BOT_TOKEN`), you may use it for automated checks.
