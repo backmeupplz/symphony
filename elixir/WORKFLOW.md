@@ -163,19 +163,36 @@ Treat work as one of these lanes:
 
 ### Telegram-specific testing
 
-For Telegram bots, prefer the repo-supported Telegram Web CDP path documented in
-`elixir/docs/telegram_web_qa.md` and implemented by `scripts/telegram_web_qa.mjs`. OpenClaw should
-use a dedicated logged-in Chrome QA profile launched with remote debugging, then run the helper to
-send and verify a timestamped message to the target bot. Do not use Peekaboo, AppleScript JavaScript
-execution, or Chrome's disabled "Allow JavaScript from Apple Events" path for Telegram Web QA.
-When launching Chrome from OpenClaw/Codex, set `HOME=/Users/borodutch` so Chrome uses the real
-macOS login keychain; for disposable throwaway profiles only, `--use-mock-keychain` may be added.
+For Telegram bots, run the browser QA capability probe before claiming browser QA is blocked:
+
+```sh
+python3 scripts/openclaw_browser_qa_capability_probe.py --json
+```
+
+Use the supported path reported by the probe:
+
+- Prefer the repo-supported Telegram Web CDP helper documented in
+  `elixir/docs/telegram_web_qa.md` and implemented by `scripts/telegram_web_qa.mjs` when Chrome
+  DevTools is already exposing a logged-in Telegram Web target.
+- Use Peekaboo when `scripts/openclaw_peekaboo_healthcheck.py --json` reports `ready: true`.
+- Use Codex Computer Use only when the worker prompt/tool list exposes `mcp__computer_use__.*`
+  tools; Computer Use is not shell-probeable.
+- If none of those paths is ready, paste the probe's `expected_blocker_message` into the Kaneo
+  workpad and route the task to a main-session QA helper instead of stopping at "Computer Use
+  unavailable".
+
+OpenClaw should use a dedicated logged-in Chrome QA profile for Telegram proof. When launching
+Chrome from OpenClaw/Codex, set `HOME=/Users/borodutch` so Chrome uses the real macOS login
+keychain; for disposable throwaway profiles only, `--use-mock-keychain` may be added. Keep browser
+inspection scoped to the approved Telegram/browser QA task; do not inspect, export, or copy private
+browser profile data or credentials. Do not use AppleScript JavaScript execution or Chrome's disabled
+"Allow JavaScript from Apple Events" path for Telegram Web QA.
 
 If the repository/task also supports scripted bot validation and the required bot token is available
 in the environment (for example `TELEGRAM_TEST_BOT_TOKEN`), you may use it for automated checks.
-Otherwise, use the CDP helper for Telegram-side proof. If the helper cannot connect to a logged-in
-Telegram Web profile, leave a crisp manual QA handoff note in Kaneo that includes the Chrome remote
-debugging URL, target bot, exact message text, and expected verification.
+Otherwise, use the probe-supported browser path for Telegram-side proof. If direct browser QA is
+blocked, leave a crisp QA handoff note in Kaneo that includes the probe output, target bot, exact
+message text, fallback tried, environment change needed, and expected verification.
 
 ## Core operating rules
 
