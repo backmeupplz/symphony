@@ -1,10 +1,33 @@
 # Telegram Web QA
 
-Use this path when OpenClaw must validate a Telegram bot through Telegram Web on the Mac. It avoids
-Peekaboo screenshots, AppleScript JavaScript execution, and Chrome's disabled "Allow JavaScript from
-Apple Events" setting.
+Use this path when OpenClaw must validate a Telegram bot through Telegram Web on the Mac.
+Workers must discover the available browser QA path before claiming Telegram Web, Peekaboo, or
+Codex Computer Use is unavailable.
 
-## Supported Path
+## Capability Probe
+
+Run this first from the repository root:
+
+```sh
+python3 scripts/openclaw_browser_qa_capability_probe.py --json
+```
+
+The probe checks the repo CDP helper, Chrome DevTools, the approved Telegram QA profile/keychain
+boundary, Peekaboo readiness, and whether Codex Computer Use must be checked in the worker tool
+list. If direct QA is blocked, copy `expected_blocker_message` into the Kaneo workpad instead of
+ending with a vague "Computer Use unavailable" note.
+
+Supported path order:
+
+1. Use `scripts/telegram_web_qa.mjs` when Chrome CDP is reachable and a logged-in Telegram Web
+   target is visible.
+2. Use Peekaboo when `scripts/openclaw_peekaboo_healthcheck.py --json` reports `ready: true`.
+3. Use Codex Computer Use only when the worker prompt/tool list exposes `mcp__computer_use__.*`
+   tools.
+4. Escalate to a main-session QA helper with the structured blocker when none of the direct paths
+   are ready.
+
+## CDP Helper Path
 
 Launch a dedicated Chrome QA profile with the Chrome DevTools Protocol enabled:
 
@@ -57,8 +80,9 @@ node scripts/telegram_web_qa.mjs \
   blocker instead of trying to bypass login.
 - If the helper cannot find the message composer, record the active URL and JSON error in the Kaneo
   workpad. This usually means Telegram Web changed its DOM or the chat did not open.
-- Do not fall back to Peekaboo, AppleScript JavaScript execution, or Chrome Apple Events for Telegram
-  Web QA.
+- If the CDP helper is unavailable or blocked, use the capability probe result to choose Peekaboo,
+  Codex Computer Use, or main-session escalation. Keep AppleScript JavaScript execution and Chrome
+  Apple Events out of the proof path.
 
 ## Kaneo Evidence
 
