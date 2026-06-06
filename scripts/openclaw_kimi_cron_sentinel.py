@@ -31,6 +31,8 @@ DEFAULT_ESCALATION_MODEL = "openai/gpt-5.5"
 DEFAULT_REMINDER_SECONDS = 6 * 60 * 60
 ACTIONABLE_STATUSES = {"planned", "selected", "to-do", "rework", "in-review"}
 ACTIVE_TASK_STATUSES = {"selected", "to-do", "in-progress", "rework", "in-review"}
+TESTING_OPEN_PR_RECOVERY_STATUS = "in-review"
+TESTING_OPEN_PR_RECOVERY_MARKER = "## Open PR Review Recovery"
 
 
 def utc_now() -> dt.datetime:
@@ -143,6 +145,30 @@ def fetch_json(url: str, *, api_key: str | None = None, timeout: int = 8) -> Any
     return json.loads(data.decode("utf-8"))
 
 
+def send_json(
+    url: str,
+    payload: dict[str, Any],
+    *,
+    method: str,
+    api_key: str,
+    timeout: int = 8,
+) -> Any:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method=method,
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = response.read()
+    if not data:
+        return None
+    return json.loads(data.decode("utf-8"))
+
+
 def fetch_kaneo_json(
     endpoint: str,
     path: str,
@@ -155,6 +181,24 @@ def fetch_kaneo_json(
     if params:
         query = "?" + urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
     return fetch_json(f"{endpoint.rstrip('/')}{path}{query}", api_key=api_key, timeout=timeout)
+
+
+def send_kaneo_json(
+    endpoint: str,
+    path: str,
+    payload: dict[str, Any],
+    *,
+    method: str,
+    api_key: str,
+    timeout: int = 8,
+) -> Any:
+    return send_json(
+        f"{endpoint.rstrip('/')}{path}",
+        payload,
+        method=method,
+        api_key=api_key,
+        timeout=timeout,
+    )
 
 
 def project_match_keys(project: dict[str, Any]) -> set[str]:
@@ -557,6 +601,8 @@ def classify_pr(
         flags.append("human-approval-gated")
     if linked_task_status == "done":
         flags.append("task-done-pr-open")
+    elif linked_task_status == "testing":
+        flags.append("testing-task-pr-open")
     elif linked_task_status not in ACTIVE_TASK_STATUSES:
         flags.append("no-linked-active-task")
     age_days = pr_age_days(pr.get("updatedAt"))
@@ -566,6 +612,8 @@ def classify_pr(
         action = "await draft readiness"
     elif "human-approval-gated" in flags:
         action = "awaiting human approval"
+    elif "testing-task-pr-open" in flags:
+        action = "testing open-pr recovery"
     elif "conflicted" in flags and "task-done-pr-open" in flags:
         action = "close as superseded or rework conflicts"
     elif "conflicted" in flags:
@@ -690,6 +738,173 @@ def collect_github_prs(
     return prs, errors
 
 
+def testing_open_pr_recovery_candidates(
+    prs: list[dict[str, Any]],
+    all_tasks_map: dict[str, dict[str, Any]],
+    existing_candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Create visible task candidates for open PRs linked to tasks currently in testing."""
+    existing_task_ids = {str(item.get("taskId") or "") for item in existing_candidates}
+    recovered_task_ids: set[str] = set()
+    recoveries: list[dict[str, Any]] = []
+
+    for pr in prs:
+        if pr.get("linkedTaskStatus") != "testing":
+            continue
+        linked_identifier = str(pr.get("linkedTaskIdentifier") or "")
+        if not linked_identifier:
+            continue
+        task = all_tasks_map.get(linked_identifier.upper())
+        if not task:
+            continue
+        task_id = str(task.get("taskId") or "")
+        if not task_id or task_id in existing_task_ids or task_id in recovered_task_ids:
+            continue
+        recovered_task_ids.add(task_id)
+        recoveries.append(
+            {
+                "project": task.get("project"),
+                "projectSlug": task.get("projectSlug"),
+                "projectId": task.get("projectId"),
+                "taskId": task_id,
+                "identifier": task.get("identifier") or linked_identifier,
+                "status": TESTING_OPEN_PR_RECOVERY_STATUS,
+                "originalStatus": "testing",
+                "priority": None,
+                "updatedAt": task.get("updatedAt"),
+                "activityMarker": None,
+                "title": task.get("title"),
+                "descriptionPreview": (
+                    f"Testing open-PR recovery for {pr.get('repo')}#{pr.get('number')}: {pr.get('title')}"
+                )[:360],
+                "recoveryReason": "testing-open-pr",
+                "recoveryPr": {
+                    "repo": pr.get("repo"),
+                    "number": pr.get("number"),
+                    "title": pr.get("title"),
+                    "url": pr.get("url"),
+                    "headRef": pr.get("headRef"),
+                    "action": pr.get("recommendedAction"),
+                    "checks": pr.get("checks"),
+                    "mergeability": pr.get("mergeability"),
+                },
+            }
+        )
+
+    return recoveries
+
+
+def recovery_note_exists(endpoint: str, api_key: str, task_id: str, pr_url: str | None) -> bool:
+    try:
+        activities = fetch_kaneo_json(endpoint, f"/activity/{urllib.parse.quote(task_id)}", api_key=api_key, timeout=8)
+    except Exception:
+        return False
+    if not isinstance(activities, list):
+        return False
+    for activity in activities:
+        if not isinstance(activity, dict):
+            continue
+        content = str(activity.get("content") or "")
+        if TESTING_OPEN_PR_RECOVERY_MARKER in content and (not pr_url or pr_url in content):
+            return True
+    return False
+
+
+def build_recovery_note(recovery: dict[str, Any]) -> str:
+    pr = recovery.get("recoveryPr") if isinstance(recovery.get("recoveryPr"), dict) else {}
+    pr_label = f"{pr.get('repo')}#{pr.get('number')}"
+    pr_url = str(pr.get("url") or "")
+    return "\n".join(
+        [
+            TESTING_OPEN_PR_RECOVERY_MARKER,
+            "",
+            (
+                f"Testing open-PR recovery: moved `{recovery.get('identifier')}` from `testing` "
+                f"to `{TESTING_OPEN_PR_RECOVERY_STATUS}` because same-ticket PR {pr_label} is still open."
+            ),
+            "",
+            f"Open PR: {pr_url or pr_label}",
+            f"Current PR action: {pr.get('action')}; checks={pr.get('checks')}; mergeability={pr.get('mergeability')}",
+            "",
+            (
+                "Reviewer handoff: finish review/merge/branch cleanup for this PR, then return the task "
+                "to `testing` for bounded Kimi QA once the merged work is live-ready."
+            ),
+            "",
+            "Duplicate guard: this recovery note is posted once per PR URL; reuse the existing recovery worker.",
+        ]
+    )
+
+
+def reconcile_testing_open_pr_recoveries(
+    endpoint: str,
+    api_key: str,
+    recoveries: list[dict[str, Any]],
+    *,
+    dry_run: bool,
+    mutate: bool,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    if dry_run or not mutate:
+        for recovery in recoveries:
+            results.append(
+                {
+                    "taskId": recovery.get("taskId"),
+                    "identifier": recovery.get("identifier"),
+                    "status": "skipped",
+                    "reason": "dry-run" if dry_run else "mutations-disabled",
+                }
+            )
+        return results
+
+    for recovery in recoveries:
+        task_id = str(recovery.get("taskId") or "")
+        pr = recovery.get("recoveryPr") if isinstance(recovery.get("recoveryPr"), dict) else {}
+        pr_url = str(pr.get("url") or "")
+        result = {
+            "taskId": task_id,
+            "identifier": recovery.get("identifier"),
+            "status": "pending",
+            "prUrl": pr_url,
+        }
+        if not task_id:
+            result.update({"status": "error", "error": "missing taskId"})
+            results.append(result)
+            continue
+        try:
+            send_kaneo_json(
+                endpoint,
+                f"/task/status/{urllib.parse.quote(task_id)}",
+                {"status": TESTING_OPEN_PR_RECOVERY_STATUS},
+                method="PUT",
+                api_key=api_key,
+                timeout=10,
+            )
+            result["statusUpdatedTo"] = TESTING_OPEN_PR_RECOVERY_STATUS
+        except Exception as exc:  # noqa: BLE001 - keep remaining recoveries moving and report.
+            result.update({"status": "error", "error": f"status update: {type(exc).__name__}: {exc}"})
+            results.append(result)
+            continue
+        try:
+            if recovery_note_exists(endpoint, api_key, task_id, pr_url):
+                result["note"] = "already-present"
+            else:
+                send_kaneo_json(
+                    endpoint,
+                    "/activity/comment",
+                    {"taskId": task_id, "comment": build_recovery_note(recovery)},
+                    method="POST",
+                    api_key=api_key,
+                    timeout=10,
+                )
+                result["note"] = "created"
+            result["status"] = "ok"
+        except Exception as exc:  # noqa: BLE001 - status is visible even if the note fails.
+            result.update({"status": "partial", "error": f"note: {type(exc).__name__}: {exc}"})
+        results.append(result)
+    return results
+
+
 # ── Existing sentinel helpers ────────────────────────────────────────────────
 
 
@@ -719,13 +934,17 @@ def collect_candidates(
         for task in data.get("tasks", []):
             status = str(task.get("status") or "")
             ident = task_identifier(merged_project, task)
+            task_id = str(task.get("id") or "")
             task_record = {
                 "identifier": ident,
                 "project": merged_project["name"],
                 "projectSlug": merged_project["slug"],
+                "projectId": project_id,
+                "taskId": task_id,
                 "number": task.get("number"),
                 "status": status,
                 "title": task.get("title"),
+                "updatedAt": task.get("updatedAt"),
             }
             all_tasks_map[ident.upper()] = task_record
             if task.get("number") is not None:
@@ -733,7 +952,6 @@ def collect_candidates(
             if status not in ACTIONABLE_STATUSES:
                 continue
             description = str(task.get("description") or "")
-            task_id = str(task.get("id") or "")
             candidates.append(
                 {
                     "project": merged_project["name"],
@@ -765,6 +983,9 @@ def signature_for(
             {
                 "taskId": item.get("taskId"),
                 "status": item.get("status"),
+                "originalStatus": item.get("originalStatus"),
+                "recoveryReason": item.get("recoveryReason"),
+                "recoveryPr": item.get("recoveryPr"),
                 "updatedAt": item.get("updatedAt"),
                 "activityMarker": item.get("activityMarker"),
                 "title": item.get("title"),
@@ -827,6 +1048,9 @@ def run_kimi(
             "identifier": item["identifier"],
             "status": item["status"],
             "title": item["title"],
+            "originalStatus": item.get("originalStatus"),
+            "recoveryReason": item.get("recoveryReason"),
+            "recoveryPr": item.get("recoveryPr"),
         }
         for item in candidates
     ]
@@ -858,6 +1082,8 @@ def run_kimi(
         PRs are not actionable unless they are stale or conflicted. Do not infer a PR
         is conflicted unless its mergeability value is exactly "conflicted"; use the
         provided recommendedAction fields as the primary PR triage signal.
+        Treat candidates with recoveryReason="testing-open-pr" as active review/merge
+        recovery work, not as a normal testing/QA handoff.
 
         {json.dumps({"symphony": probe, "tasks": compact_candidates, "prs": compact_prs}, ensure_ascii=True)}
         """
@@ -1029,9 +1255,30 @@ def build_wake_message(
         lines.extend(["", f"Kimi error: {kimi.get('stderr')}"])
     lines.extend(["", "Symphony probe:", f"- {json.dumps(probe, sort_keys=True)}", "", "Candidate tasks:"])
     for item in candidates[:20]:
+        recovery_suffix = ""
+        recovery_pr = item.get("recoveryPr") if isinstance(item.get("recoveryPr"), dict) else None
+        if item.get("recoveryReason") == "testing-open-pr" and recovery_pr:
+            recovery_suffix = (
+                f" [TESTING_OPEN_PR_RECOVERY from {item.get('originalStatus')} via "
+                f"{recovery_pr.get('repo')}#{recovery_pr.get('number')}]"
+            )
         lines.append(
             f"- {item['identifier']} [{item['status']}] {item['title']} "
             f"(project={item['project']}, taskId={item['taskId']}, updatedAt={item['updatedAt']})"
+            f"{recovery_suffix}"
+        )
+    recovery_items = [item for item in candidates if item.get("recoveryReason") == "testing-open-pr"]
+    if recovery_items:
+        lines.extend(
+            [
+                "",
+                "Testing open-PR recovery:",
+                (
+                    "- Start notices and completion summaries must state this is an open-PR recovery "
+                    "from `testing`, not a normal Kimi testing/QA handoff."
+                ),
+                "- After PR merge, branch cleanup, and live-readiness, return the task to `testing` for Kimi QA.",
+            ]
         )
     if prs:
         lines.extend(["", "Open GitHub PRs:"])
@@ -1054,7 +1301,8 @@ def build_wake_message(
         [
             "",
             "Act in GPT-5.5 high only if this needs promotion/review/rework/merge judgment. "
-            "The sentinel performed no Kaneo mutations, GitHub mutations, merges, or QA claims.",
+            "The sentinel performed no GitHub mutations, merges, or QA claims. Kaneo mutations are limited "
+            "to testing open-PR recovery status/notice reconciliation when reported above.",
         ]
     )
     return "\n".join(lines)
@@ -1107,6 +1355,11 @@ def main() -> int:
     parser.add_argument("--gh-home", default=os.environ.get("SYMPHONY_SENTINEL_GH_HOME"))
     parser.add_argument("--skip-dynamic-projects", action="store_true", help="Only use projects from WORKFLOW.md.")
     parser.add_argument("--skip-prs", action="store_true", help="Skip GitHub PR scanning.")
+    parser.add_argument(
+        "--no-kaneo-recovery-mutations",
+        action="store_true",
+        help="Do not move testing tasks with open same-ticket PRs back to in-review or post recovery notes.",
+    )
     parser.add_argument("--escalate", action="store_true", help="Wake GPT-5.5 high when changed actionable work is found.")
     parser.add_argument("--force-reminder", action="store_true")
     parser.add_argument("--always-classify", action="store_true", help="Run Kimi even when dedupe says the snapshot is unchanged.")
@@ -1155,6 +1408,20 @@ def main() -> int:
         prs, pr_errors = collect_github_prs(projects, all_tasks_map, max_prs=args.max_prs, gh_home=args.gh_home)
     if pr_errors:
         probe["prErrors"] = pr_errors[:8]
+    testing_open_pr_recoveries = testing_open_pr_recovery_candidates(prs, all_tasks_map, candidates)
+    recovery_results = reconcile_testing_open_pr_recoveries(
+        endpoint,
+        api_key,
+        testing_open_pr_recoveries,
+        dry_run=args.dry_run,
+        mutate=not args.no_kaneo_recovery_mutations,
+    )
+    if testing_open_pr_recoveries:
+        candidates.extend(testing_open_pr_recoveries)
+        probe["testingOpenPrRecoveryCodes"] = [
+            str(item.get("identifier")) for item in testing_open_pr_recoveries if item.get("identifier")
+        ]
+        probe["testingOpenPrRecoveryResults"] = recovery_results
 
     signature, normalized_candidates, normalized_prs = signature_for(candidates, probe, prs)
     state_path = Path(args.state)
@@ -1223,6 +1490,7 @@ def main() -> int:
             "candidateCount": len(candidates),
             "prCount": len(prs),
             "actionablePrCount": len(actionable_prs),
+            "testingOpenPrRecoveryCount": len(testing_open_pr_recoveries),
             "normalized": normalized_candidates[: args.max_candidates],
             "normalizedPrs": normalized_prs[: args.max_prs],
         }
@@ -1242,6 +1510,7 @@ def main() -> int:
             "lastCandidateCount": len(candidates),
             "lastPrCount": len(prs),
             "lastActionablePrCount": len(actionable_prs),
+            "lastTestingOpenPrRecoveryCount": len(testing_open_pr_recoveries),
             "lastKimiOk": bool(kimi.get("ok")),
             "lastKimiSkipped": bool(kimi.get("skipped")),
         }
@@ -1254,6 +1523,7 @@ def main() -> int:
         "candidateCount": len(candidates),
         "prCount": len(prs),
         "actionablePrCount": len(actionable_prs),
+        "testingOpenPrRecoveryCount": len(testing_open_pr_recoveries),
         "decision": reason,
         "wouldEscalate": bool(should_wake_main),
         "kimiActionable": bool(kimi_actionable),
@@ -1268,6 +1538,8 @@ def main() -> int:
         "candidateCount": len(candidates),
         "prCount": len(prs),
         "actionablePrCount": len(actionable_prs),
+        "testingOpenPrRecoveryCount": len(testing_open_pr_recoveries),
+        "testingOpenPrRecoveryResults": recovery_results,
         "signature": signature,
         "decision": reason,
         "wouldEscalate": bool(should_wake_main),
@@ -1293,6 +1565,9 @@ def main() -> int:
                 "title": item["title"],
                 "project": item["project"],
                 "updatedAt": item["updatedAt"],
+                "originalStatus": item.get("originalStatus"),
+                "recoveryReason": item.get("recoveryReason"),
+                "recoveryPr": item.get("recoveryPr"),
             }
             for item in candidates
         ],
