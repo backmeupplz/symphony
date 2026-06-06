@@ -133,6 +133,21 @@ class OpenClawKimiCronSentinelTest(unittest.TestCase):
         self.assertEqual(pending["recommendedAction"], "wait for checks")
         self.assertIn("task-done-pr-open", done_open["flags"])
 
+    def test_classifies_testing_task_open_pr_as_recovery(self) -> None:
+        result = sentinel.classify_pr(
+            {
+                "mergeable": "MERGEABLE",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [check(None, "IN_PROGRESS")],
+                "reviewDecision": "",
+            },
+            linked_task_status="testing",
+        )
+
+        self.assertIn("testing-task-pr-open", result["flags"])
+        self.assertNotIn("no-linked-active-task", result["flags"])
+        self.assertEqual(result["recommendedAction"], "testing open-pr recovery")
+
     def test_collect_github_prs_links_task_refs_from_title_body_and_branch(self) -> None:
         original_fetch = sentinel.fetch_prs_for_repo
         try:
@@ -167,6 +182,68 @@ class OpenClawKimiCronSentinelTest(unittest.TestCase):
         self.assertEqual(prs[0]["linkedTaskIdentifier"], "VEY-KANEO-17")
         self.assertTrue(prs[0]["taskDonePrOpen"])
         self.assertEqual(prs[0]["recommendedAction"], "close as superseded or rework conflicts")
+
+    def test_testing_open_pr_recovery_candidate_covers_vey350_pr604_without_duplicates(self) -> None:
+        original_fetch = sentinel.fetch_prs_for_repo
+        task_record = {
+            "identifier": "VEY-KANEO-350",
+            "project": "Veydrift",
+            "projectSlug": "VEY",
+            "projectId": "project-vey",
+            "taskId": "task-vey-350",
+            "status": "testing",
+            "title": "Show tactical planet sub-lists in Rankings",
+            "updatedAt": "2026-06-06T15:02:29.656Z",
+        }
+        try:
+            sentinel.fetch_prs_for_repo = lambda owner, repo, limit=20, gh_home=None: (
+                [
+                    {
+                        "number": 604,
+                        "title": "Move Rankings home marker into planet rows",
+                        "body": "Refs VEY-350",
+                        "url": "https://github.com/Borodutch/veydrift/pull/604",
+                        "headRefName": "vey-350-rankings-home-marker",
+                        "mergeable": "MERGEABLE",
+                        "mergeStateStatus": "CLEAN",
+                        "statusCheckRollup": [check()],
+                    }
+                ],
+                None,
+            )
+            prs, errors = sentinel.collect_github_prs(
+                [{"slug": "VEY", "repo_url": "https://github.com/Borodutch/veydrift.git"}],
+                {"VEY-350": task_record, "VEY-KANEO-350": task_record},
+            )
+        finally:
+            sentinel.fetch_prs_for_repo = original_fetch
+
+        self.assertEqual(errors, [])
+        self.assertEqual(prs[0]["linkedTaskIdentifier"], "VEY-KANEO-350")
+        self.assertEqual(prs[0]["linkedTaskStatus"], "testing")
+        self.assertEqual(prs[0]["recommendedAction"], "testing open-pr recovery")
+
+        recoveries = sentinel.testing_open_pr_recovery_candidates(
+            prs + [dict(prs[0], number=605)],
+            {"VEY-350": task_record, "VEY-KANEO-350": task_record},
+            [],
+        )
+
+        self.assertEqual(len(recoveries), 1)
+        self.assertEqual(recoveries[0]["taskId"], "task-vey-350")
+        self.assertEqual(recoveries[0]["status"], "in-review")
+        self.assertEqual(recoveries[0]["originalStatus"], "testing")
+        self.assertEqual(recoveries[0]["recoveryReason"], "testing-open-pr")
+        self.assertEqual(recoveries[0]["recoveryPr"]["number"], 604)
+
+        self.assertEqual(
+            sentinel.testing_open_pr_recovery_candidates(
+                prs,
+                {"VEY-350": task_record, "VEY-KANEO-350": task_record},
+                [{"taskId": "task-vey-350"}],
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":
