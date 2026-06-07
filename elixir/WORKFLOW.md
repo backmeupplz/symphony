@@ -83,6 +83,7 @@ hooks:
       ./scripts/symphony-cleanup.sh
     fi
 agent:
+  backend: claude
   max_concurrent_agents: 10
   max_turns: 20
 codex:
@@ -91,6 +92,12 @@ codex:
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+claude:
+  command: claude
+  model: claude-opus-4-8
+  effort: high
+  permission_mode: bypassPermissions
+  env_file: /Users/borodutch/.config/symphony/anthropic.env
 ---
 
 You are working on a Kaneo task `{{ issue.identifier }}`.
@@ -135,9 +142,11 @@ Use this workflow model consistently for every project:
   1. `to-do`
   2. `in-progress`
   3. `in-review`
-  4. `rework`
-  5. `done`
+  4. `testing`
+  5. `rework`
+  6. `done`
 - `done` is terminal.
+- `testing` is live QA owned by the bounded Kimi QA worker; Symphony implementation workers do not pick it up.
 - `planned`/backlog is **not** an active execution state for Symphony.
 
 If a task is in backlog / `planned`, do not start it. Wait for OpenClaw or a human to move it to `to-do`.
@@ -157,13 +166,15 @@ Treat work as one of these lanes:
    - Implement in the cloned repo, validate locally, push a branch, and open/update the PR.
 
 3. **Testing / QA**
-   - Codex owns repo-local automated validation: tests, typechecks, lint, builds, fixtures, scripted checks.
-   - OpenClaw owns manual and interactive QA when browser login state, local apps, mobile simulators, Safari/Chrome sessions, Telegram Web, or device-specific validation are required.
-   - When manual QA is needed, document exactly what needs to be verified so OpenClaw or Nikita can run that loop cleanly.
+   - Implementation workers own repo-local automated validation: tests, typechecks, lint, builds, fixtures, scripted checks.
+   - GPT-5.5 high reviewers own code/PR review, merge/deploy-readiness checks, and a clear handoff to `testing`; they should not attempt full manual/live QA unless the ticket explicitly requires a tiny smoke proof to make the handoff coherent.
+   - The bounded Kimi QA worker owns live/manual QA for `testing` tickets and moves them to `done` or `rework`.
 
-### Telegram-specific testing
+### Telegram-Specific Testing
 
-For Telegram bots, run the browser QA capability probe before claiming browser QA is blocked:
+For Telegram bots, QA workers run the browser QA capability probe before claiming browser QA is
+blocked. GPT-5.5 high reviewers should usually leave this to the Kimi `testing` worker and only
+record the handoff details:
 
 ```sh
 python3 scripts/openclaw_browser_qa_capability_probe.py --json
@@ -208,6 +219,7 @@ message text, fallback tried, environment change needed, and expected verificati
 10. If you discover follow-up work outside the current scope, create a separate Kaneo backlog (`planned`) task instead of silently expanding scope.
 11. If the repo includes `.codex/skills/land/SKILL.md`, open and follow `.codex/skills/land/SKILL.md` before making substantial changes.
 12. Do not call `gh pr merge` directly.
+13. Do not run broad home-directory scans such as `find /Users/borodutch`, `rg --files /Users/borodutch`, `du /Users/borodutch`, recursive `ls` over `$HOME`, or equivalents. Scope searches to the cloned repo, this workflow workspace, `.openclaw` operational paths explicitly needed for an OpenClaw task, or a known project directory. Broad scans can trigger macOS TCC "access data from other apps" prompts.
 
 ## Restart continuity
 
@@ -228,7 +240,8 @@ preserved workspace and workpad state.
 - `planned` / backlog -> not active; do not modify, do not start.
 - `to-do` -> queued; immediately move to `in-progress` before active work begins.
 - `in-progress` -> active implementation.
-- `in-review` -> work is implemented and waiting on human review / approval / external QA.
+- `in-review` -> work is implemented and waiting on GPT-5.5 high PR/code review.
+- `testing` -> reviewed/merged/deployed enough for bounded Kimi live QA.
 - `rework` -> feedback or QA changes required; perform another implementation pass.
 - `done` -> terminal; stop.
 
@@ -242,6 +255,7 @@ preserved workspace and workpad state.
    - `to-do` -> move to `in-progress`, then begin execution.
    - `in-progress` -> continue execution.
    - `in-review` -> do not code; poll for review feedback or approval.
+   - `testing` -> stop; bounded Kimi QA owns live verification and will move to `done` or `rework`.
    - `rework` -> perform a fresh implementation pass focused on feedback.
    - `done` -> stop.
 3. If the task content and current state disagree, note the mismatch in the workpad and take the safest path.
@@ -303,13 +317,14 @@ Rules:
 7. Attach the PR URL to the Kaneo issue and ensure the PR has label `symphony`.
 8. Resolve all actionable PR feedback before moving back to `in-review`.
 
-### Step 3: review / QA loop
+### Step 3: review / readiness loop
 
 When the task is `in-review`:
 - Do not continue coding unless review feedback arrives.
-- Poll PR review state, review threads, and CI/check status; do not post GitHub comments.
+- Poll PR review state, review threads, CI/check status, and deploy/readiness signals; do not post GitHub comments.
+- Do not run broad manual/browser/live QA here. Capture only lightweight sanity evidence if it is cheap and directly needed for the testing handoff.
 - If changes are requested, move the issue to `rework` and address them.
-- If approved and merged, confirm the merged PR head branch was deleted before moving the issue to `done`.
+- If approved, merged, and ready for live QA, confirm the merged PR head branch was deleted before moving the issue to `testing`.
   When Symphony owns the merge, use `gh pr merge --squash --delete-branch` via the land skill.
   When OpenClaw or a human owns the merge, include branch deletion in the handoff checklist and verify
   the remote branch is gone; if cleanup is still needed, delete only the merged PR head ref with
@@ -319,7 +334,7 @@ When the task is `in-review`:
   default/protected branches, and branches that still have an open same-repo PR.
 - Never delete default/protected branches or a branch with an open PR; treat GitHub 403/404/422 deletion
   responses as safe failures to document instead of widening the deletion target.
-- After branch cleanup is verified or safely skipped, move the issue to `done`.
+- After branch cleanup is verified or safely skipped, move the issue to `testing` for live Kimi QA.
 
 ## Quality bar before `in-review`
 
@@ -332,22 +347,21 @@ Do not move a task to `in-review` unless all of the following are true:
 - all actionable PR feedback has been addressed or explicitly answered.
 - the workpad and PR description contain a concise `Testing` or `Validation` handoff that separates:
   - automated checks Symphony ran, with command/result evidence;
-  - manual QA still required, or an explicit `Manual QA: not required` with rationale.
-  - bounded review guidance tied to the actual changed surface area, with unknowns called out.
+  - live/manual QA still required for the Kimi `testing` worker, or an explicit note that no live QA is expected;
+  - bounded testing guidance tied to the actual changed surface area, with unknowns called out.
 
-## Manual QA handoff expectations
+## Testing Handoff Expectations
 
-When a task needs browser/device/manual validation, make the handoff concrete. Include:
-- exact environment to use (for example Telegram Web in Safari, Chrome, iOS simulator, Android emulator);
+When a task needs browser/device/manual/live validation, the reviewer should make the handoff concrete for the Kimi `testing` worker. Include:
+- exact environment to use (for example live app URL, Telegram Web, Chrome, iOS simulator, Android emulator);
 - the user path to exercise;
 - the expected result;
-- any screenshots, recordings, or Kaneo comments needed for approval.
-- for Telegram Web QA, whether the CDP helper was used, the Chrome remote debugging URL, target bot,
-  message text, and the helper's JSON verification output or the blocker preventing it.
+- artifacts already available from implementation/review, if any;
+- for Telegram Web QA, the target bot/chat, exact message text, and any known browser-helper prerequisites or blockers.
 
-When manual QA is not needed, the handoff must still say so explicitly and list the automated
-checks that are enough for review. The handoff should let OpenClaw or Nikita decide whether an
-`in-review` task can move to `done` without rereading the whole branch.
+When live/manual QA is not expected, the handoff must still say so explicitly and list the automated
+checks that are enough for review. The handoff should let a reviewer move an `in-review` task to
+`testing` without trying to complete the Kimi QA worker's job.
 
 Do not turn this into a broad QA script. Keep guidance lightweight, reviewer-oriented, and limited
 to what Symphony can justify from the code changes and task context.
