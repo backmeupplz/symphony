@@ -12,9 +12,15 @@ defmodule SymphonyElixir.Claude.PrintRunner do
   def run(workspace, prompt, issue, opts \\ []) do
     worker_host = Keyword.get(opts, :worker_host)
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    # Claude `--print` is stateless per process. To give multi-turn runs the same
+    # persistent conversation context Codex's app-server keeps, the caller threads a
+    # stable session id: the first turn opens it with `--session-id`, later turns
+    # continue it with `--resume`.
+    claude_session_id = Keyword.get(opts, :session_id)
+    resume? = Keyword.get(opts, :resume, false)
 
     with {:ok, expanded_workspace} <- validate_workspace_cwd(workspace, worker_host) do
-      session_id = "claude-#{System.unique_integer([:positive, :monotonic])}"
+      session_id = claude_session_id || "claude-#{System.unique_integer([:positive, :monotonic])}"
       metadata = %{claude_cli: true}
 
       emit_message(on_message, :session_started, %{session_id: session_id}, metadata)
@@ -22,8 +28,8 @@ defmodule SymphonyElixir.Claude.PrintRunner do
 
       result =
         case worker_host do
-          host when is_binary(host) -> run_remote(host, expanded_workspace, prompt)
-          _ -> run_local(expanded_workspace, prompt)
+          host when is_binary(host) -> run_remote(host, expanded_workspace, prompt, claude_session_id, resume?)
+          _ -> run_local(expanded_workspace, prompt, claude_session_id, resume?)
         end
 
       case result do
@@ -40,7 +46,7 @@ defmodule SymphonyElixir.Claude.PrintRunner do
     end
   end
 
-  defp run_local(workspace, prompt) do
+  defp run_local(workspace, prompt, session_id, resume?) do
     settings = Config.settings!().claude
 
     with {:ok, executable} <- resolve_executable(settings.command) do
@@ -51,7 +57,7 @@ defmodule SymphonyElixir.Claude.PrintRunner do
             :binary,
             :exit_status,
             :stderr_to_stdout,
-            args: Enum.map(local_args(settings, prompt), &String.to_charlist/1),
+            args: Enum.map(local_args(settings, prompt, session_id, resume?), &String.to_charlist/1),
             cd: String.to_charlist(workspace),
             env: env_vars(settings.env_file)
           ]
@@ -61,14 +67,14 @@ defmodule SymphonyElixir.Claude.PrintRunner do
     end
   end
 
-  defp run_remote(worker_host, workspace, prompt) do
+  defp run_remote(worker_host, workspace, prompt, session_id, resume?) do
     settings = Config.settings!().claude
 
     command =
       [
         "cd #{shell_escape(workspace)}",
         source_env_command(settings.env_file),
-        Enum.map_join(remote_args(settings, prompt), " ", &shell_escape/1)
+        Enum.map_join(remote_args(settings, prompt, session_id, resume?), " ", &shell_escape/1)
       ]
       |> Enum.reject(&(&1 in [nil, ""]))
       |> Enum.join(" && ")
@@ -80,23 +86,31 @@ defmodule SymphonyElixir.Claude.PrintRunner do
     end
   end
 
-  defp local_args(settings, prompt) do
+  defp local_args(settings, prompt, session_id, resume?) do
     # NOTE: do not pass --bare. It skips the credential-resolution path that
     # reads CLAUDE_CODE_OAUTH_TOKEN, so subscription auth fails with
     # "Not logged in". Plain --print resolves the token correctly.
-    [
-      "--print",
-      "--model",
-      settings.model,
-      "--effort",
-      settings.effort,
-      "--permission-mode",
-      settings.permission_mode,
-      prompt
-    ]
+    ["--print"] ++
+      session_args(session_id, resume?) ++
+      [
+        "--model",
+        settings.model,
+        "--effort",
+        settings.effort,
+        "--permission-mode",
+        settings.permission_mode,
+        prompt
+      ]
   end
 
-  defp remote_args(settings, prompt), do: [settings.command | local_args(settings, prompt)]
+  defp remote_args(settings, prompt, session_id, resume?),
+    do: [settings.command | local_args(settings, prompt, session_id, resume?)]
+
+  # First turn opens a fixed session id; later turns resume it so the worker keeps
+  # the same conversation context across turns (parity with Codex's app-server).
+  defp session_args(nil, _resume?), do: []
+  defp session_args(session_id, true) when is_binary(session_id), do: ["--resume", session_id]
+  defp session_args(session_id, false) when is_binary(session_id), do: ["--session-id", session_id]
 
   defp source_env_command(nil), do: nil
   defp source_env_command(""), do: nil

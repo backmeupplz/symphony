@@ -100,11 +100,14 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_claude_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    # One stable session id for the whole run so continuation turns resume the same
+    # Claude conversation (matches Codex's persistent app-server session).
+    claude_session_id = uuid4()
 
-    do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, 1, max_turns)
+    do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, 1, max_turns, claude_session_id)
   end
 
-  defp do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns) do
+  defp do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns, claude_session_id) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
@@ -113,7 +116,9 @@ defmodule SymphonyElixir.AgentRunner do
              prompt,
              issue,
              on_message: codex_message_handler(codex_update_recipient, issue),
-             worker_host: worker_host
+             worker_host: worker_host,
+             session_id: claude_session_id,
+             resume: turn_number > 1
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -129,7 +134,8 @@ defmodule SymphonyElixir.AgentRunner do
             issue_state_fetcher,
             worker_host,
             turn_number + 1,
-            max_turns
+            max_turns,
+            claude_session_id
           )
 
         {:continue, refreshed_issue} ->
@@ -247,5 +253,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
+  end
+
+  # RFC 4122 v4 UUID; `claude --session-id` requires a valid UUID.
+  defp uuid4 do
+    <<u0::48, _::4, u1::12, _::2, u2::62>> = :crypto.strong_rand_bytes(16)
+    <<a::32, b::16, c::16, d::16, e::48>> = <<u0::48, 4::4, u1::12, 2::2, u2::62>>
+
+    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
+    |> IO.iodata_to_binary()
   end
 end
