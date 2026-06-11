@@ -88,6 +88,24 @@ defmodule SymphonyElixir.Config do
     |> Enum.reject(&(&1 == "" or review_handoff_state?(tracker_kind, &1)))
   end
 
+  @doc """
+  Name of the state a `to-do` ticket is moved to when a worker starts on it, or
+  `nil` when the automatic transition is disabled (empty config value).
+  """
+  @spec in_progress_state_name() :: String.t() | nil
+  def in_progress_state_name do
+    case settings!().tracker.in_progress_state do
+      name when is_binary(name) ->
+        case String.trim(name) do
+          "" -> nil
+          trimmed -> trimmed
+        end
+
+      _ ->
+        nil
+    end
+  end
+
   @spec review_handoff_state?(String.t() | nil, String.t()) :: boolean()
   def review_handoff_state?(tracker_kind, state_name) when is_binary(state_name) do
     normalized_kind = normalize_tracker_kind(tracker_kind)

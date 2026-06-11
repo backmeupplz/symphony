@@ -92,6 +92,10 @@ defmodule SymphonyElixir.Config.Schema do
       field(:assignee, :string)
       field(:active_states, {:array, :string}, default: ["Todo", "In Progress"])
       field(:terminal_states, {:array, :string}, default: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"])
+      # State a `to-do` ticket is moved to when a worker starts on it, so the board
+      # reflects active work deterministically instead of relying on the agent to
+      # update the tracker itself. Set to "" to disable the automatic transition.
+      field(:in_progress_state, :string, default: "in-progress")
       embeds_many(:projects, KaneoProject, on_replace: :delete)
     end
 
@@ -100,7 +104,7 @@ defmodule SymphonyElixir.Config.Schema do
       schema
       |> cast(
         attrs,
-        [:kind, :endpoint, :api_key, :project_slug, :project_id, :assignee, :active_states, :terminal_states],
+        [:kind, :endpoint, :api_key, :project_slug, :project_id, :assignee, :active_states, :terminal_states, :in_progress_state],
         empty_values: []
       )
       |> cast_embed(:projects, with: &KaneoProject.changeset/2)

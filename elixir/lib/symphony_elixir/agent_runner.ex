@@ -17,6 +17,10 @@ defmodule SymphonyElixir.AgentRunner do
 
     Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
+    # Deterministically reflect that the ticket is now being worked, regardless of
+    # what the coding agent does. Best-effort: a tracker failure never blocks work.
+    maybe_mark_issue_in_progress(issue)
+
     case run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
       :ok ->
         :ok
@@ -26,6 +30,33 @@ defmodule SymphonyElixir.AgentRunner do
         raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
     end
   end
+
+  defp maybe_mark_issue_in_progress(%Issue{id: issue_id, state: state} = issue) when is_binary(issue_id) do
+    case Config.in_progress_state_name() do
+      nil ->
+        :ok
+
+      in_progress ->
+        if normalized_state(state) == normalized_state(in_progress) do
+          :ok
+        else
+          case Tracker.update_issue_state(issue_id, in_progress) do
+            :ok ->
+              Logger.info("Marked #{issue_context(issue)} as #{in_progress} on dispatch")
+
+            {:error, reason} ->
+              Logger.warning("Could not mark #{issue_context(issue)} as #{in_progress} on dispatch: #{inspect(reason)}")
+          end
+
+          :ok
+        end
+    end
+  end
+
+  defp maybe_mark_issue_in_progress(_issue), do: :ok
+
+  defp normalized_state(nil), do: nil
+  defp normalized_state(state) when is_binary(state), do: SymphonyElixir.Config.Schema.normalize_issue_state(state)
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
