@@ -17,6 +17,10 @@ defmodule SymphonyElixir.AgentRunner do
 
     Logger.info("Starting agent run for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
+    # Deterministically reflect that the ticket is now being worked, regardless of
+    # what the coding agent does. Best-effort: a tracker failure never blocks work.
+    maybe_mark_issue_in_progress(issue)
+
     case run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
       :ok ->
         :ok
@@ -26,6 +30,33 @@ defmodule SymphonyElixir.AgentRunner do
         raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"
     end
   end
+
+  defp maybe_mark_issue_in_progress(%Issue{id: issue_id, state: state} = issue) when is_binary(issue_id) do
+    case Config.in_progress_state_name() do
+      nil ->
+        :ok
+
+      in_progress ->
+        if normalized_state(state) == normalized_state(in_progress) do
+          :ok
+        else
+          case Tracker.update_issue_state(issue_id, in_progress) do
+            :ok ->
+              Logger.info("Marked #{issue_context(issue)} as #{in_progress} on dispatch")
+
+            {:error, reason} ->
+              Logger.warning("Could not mark #{issue_context(issue)} as #{in_progress} on dispatch: #{inspect(reason)}")
+          end
+
+          :ok
+        end
+    end
+  end
+
+  defp maybe_mark_issue_in_progress(_issue), do: :ok
+
+  defp normalized_state(nil), do: nil
+  defp normalized_state(state) when is_binary(state), do: SymphonyElixir.Config.Schema.normalize_issue_state(state)
 
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
@@ -100,11 +131,14 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_claude_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    # One stable session id for the whole run so continuation turns resume the same
+    # Claude conversation (matches Codex's persistent app-server session).
+    claude_session_id = uuid4()
 
-    do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, 1, max_turns)
+    do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, 1, max_turns, claude_session_id)
   end
 
-  defp do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns) do
+  defp do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns, claude_session_id) do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
@@ -113,7 +147,9 @@ defmodule SymphonyElixir.AgentRunner do
              prompt,
              issue,
              on_message: codex_message_handler(codex_update_recipient, issue),
-             worker_host: worker_host
+             worker_host: worker_host,
+             session_id: claude_session_id,
+             resume: turn_number > 1
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 
@@ -129,7 +165,8 @@ defmodule SymphonyElixir.AgentRunner do
             issue_state_fetcher,
             worker_host,
             turn_number + 1,
-            max_turns
+            max_turns,
+            claude_session_id
           )
 
         {:continue, refreshed_issue} ->
@@ -247,5 +284,14 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
+  end
+
+  # RFC 4122 v4 UUID; `claude --session-id` requires a valid UUID.
+  defp uuid4 do
+    <<u0::48, _::4, u1::12, _::2, u2::62>> = :crypto.strong_rand_bytes(16)
+    <<a::32, b::16, c::16, d::16, e::48>> = <<u0::48, 4::4, u1::12, 2::2, u2::62>>
+
+    :io_lib.format("~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b", [a, b, c, d, e])
+    |> IO.iodata_to_binary()
   end
 end
