@@ -9,6 +9,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   @initialize_id 1
   @thread_start_id 2
   @turn_start_id 3
+  @turn_steer_id 4
   @port_line_bytes 1_048_576
   @max_stream_log_bytes 1_000
   @non_interactive_tool_input_answer "This is a non-interactive session. Operator input is unavailable."
@@ -82,6 +83,8 @@ defmodule SymphonyElixir.Codex.AppServer do
         opts \\ []
       ) do
     on_message = Keyword.get(opts, :on_message, &default_on_message/1)
+    on_requirements_result = Keyword.get(opts, :on_requirements_result, &default_on_requirements_result/1)
+    requirements_revision = Keyword.get(opts, :requirements_revision)
 
     tool_executor =
       Keyword.get(opts, :tool_executor, fn tool, arguments ->
@@ -104,8 +107,25 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata
         )
 
-        case await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
-          {:ok, result} ->
+        turn_context = %{
+          thread_id: thread_id,
+          turn_id: turn_id,
+          issue_id: Map.get(issue, :id),
+          requirements_revision: requirements_revision,
+          on_requirements_result: on_requirements_result,
+          pending_steer: nil,
+          queued_steer: nil,
+          next_request_id: @turn_steer_id
+        }
+
+        case await_turn_completion(
+               port,
+               on_message,
+               tool_executor,
+               auto_approve_requests,
+               turn_context
+             ) do
+          {:ok, result, completed_context} ->
             Logger.info("Codex session completed for #{issue_context(issue)} session_id=#{session_id}")
 
             {:ok,
@@ -113,7 +133,8 @@ defmodule SymphonyElixir.Codex.AppServer do
                result: result,
                session_id: session_id,
                thread_id: thread_id,
-               turn_id: turn_id
+               turn_id: turn_id,
+               requirements_revision: completed_context.requirements_revision
              }}
 
           {:error, reason} ->
@@ -326,22 +347,46 @@ defmodule SymphonyElixir.Codex.AppServer do
     end
   end
 
-  defp await_turn_completion(port, on_message, tool_executor, auto_approve_requests) do
+  defp await_turn_completion(
+         port,
+         on_message,
+         tool_executor,
+         auto_approve_requests,
+         turn_context
+       ) do
     receive_loop(
       port,
       on_message,
       Config.settings!().codex.turn_timeout_ms,
       "",
       tool_executor,
-      auto_approve_requests
+      auto_approve_requests,
+      turn_context
     )
   end
 
-  defp receive_loop(port, on_message, timeout_ms, pending_line, tool_executor, auto_approve_requests) do
+  defp receive_loop(
+         port,
+         on_message,
+         timeout_ms,
+         pending_line,
+         tool_executor,
+         auto_approve_requests,
+         turn_context
+       ) do
     receive do
       {^port, {:data, {:eol, chunk}}} ->
         complete_line = pending_line <> to_string(chunk)
-        handle_incoming(port, on_message, complete_line, timeout_ms, tool_executor, auto_approve_requests)
+
+        handle_incoming(
+          port,
+          on_message,
+          complete_line,
+          timeout_ms,
+          tool_executor,
+          auto_approve_requests,
+          turn_context
+        )
 
       {^port, {:data, {:noeol, chunk}}} ->
         receive_loop(
@@ -350,24 +395,87 @@ defmodule SymphonyElixir.Codex.AppServer do
           timeout_ms,
           pending_line <> to_string(chunk),
           tool_executor,
-          auto_approve_requests
+          auto_approve_requests,
+          turn_context
         )
 
       {^port, {:exit_status, status}} ->
+        fail_pending_steer(turn_context, {:port_exit, status})
         {:error, {:port_exit, status}}
+
+      {:steer_requirements, issue_id, revision, prompt}
+      when issue_id == turn_context.issue_id and is_binary(revision) and is_binary(prompt) ->
+        updated_context = queue_requirements_steer(port, turn_context, revision, prompt)
+
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          pending_line,
+          tool_executor,
+          auto_approve_requests,
+          updated_context
+        )
     after
       timeout_ms ->
+        fail_pending_steer(turn_context, :turn_timeout)
         {:error, :turn_timeout}
     end
   end
 
-  defp handle_incoming(port, on_message, data, timeout_ms, tool_executor, auto_approve_requests) do
+  defp handle_incoming(
+         port,
+         on_message,
+         data,
+         timeout_ms,
+         tool_executor,
+         auto_approve_requests,
+         turn_context
+       ) do
     payload_string = to_string(data)
+    decoded = Jason.decode(payload_string)
 
-    case Jason.decode(payload_string) do
+    case maybe_handle_steer_response(port, decoded, turn_context) do
+      {:handled, updated_context} ->
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          updated_context
+        )
+
+      :unhandled ->
+        handle_turn_payload(
+          port,
+          on_message,
+          decoded,
+          payload_string,
+          timeout_ms,
+          tool_executor,
+          auto_approve_requests,
+          turn_context
+        )
+    end
+  end
+
+  defp handle_turn_payload(
+         port,
+         on_message,
+         decoded,
+         payload_string,
+         timeout_ms,
+         tool_executor,
+         auto_approve_requests,
+         turn_context
+       ) do
+    case decoded do
       {:ok, %{"method" => "turn/completed"} = payload} ->
         emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        {:ok, :turn_completed}
+        completed_context = fail_pending_steer(turn_context, :turn_completed_before_steer_ack)
+        {:ok, :turn_completed, completed_context}
 
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
         emit_turn_event(
@@ -379,6 +487,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           Map.get(payload, "params")
         )
 
+        fail_pending_steer(turn_context, {:turn_failed, Map.get(payload, "params")})
         {:error, {:turn_failed, Map.get(payload, "params")}}
 
       {:ok, %{"method" => "turn/cancelled", "params" => _} = payload} ->
@@ -391,19 +500,23 @@ defmodule SymphonyElixir.Codex.AppServer do
           Map.get(payload, "params")
         )
 
+        fail_pending_steer(turn_context, {:turn_cancelled, Map.get(payload, "params")})
         {:error, {:turn_cancelled, Map.get(payload, "params")}}
 
       {:ok, %{"method" => method} = payload}
       when is_binary(method) ->
         handle_turn_method(
-          port,
-          on_message,
           payload,
           payload_string,
           method,
-          timeout_ms,
-          tool_executor,
-          auto_approve_requests
+          turn_context,
+          %{
+            port: port,
+            on_message: on_message,
+            timeout_ms: timeout_ms,
+            tool_executor: tool_executor,
+            auto_approve_requests: auto_approve_requests
+          }
         )
 
       {:ok, payload} ->
@@ -417,7 +530,15 @@ defmodule SymphonyElixir.Codex.AppServer do
           metadata_from_message(port, payload)
         )
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          turn_context
+        )
 
       {:error, _reason} ->
         log_non_json_stream_line(payload_string, "turn stream")
@@ -434,8 +555,126 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
         end
 
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          turn_context
+        )
     end
+  end
+
+  defp queue_requirements_steer(_port, turn_context, revision, _prompt)
+       when revision == turn_context.requirements_revision do
+    notify_requirements_result(turn_context, {:ok, revision})
+    turn_context
+  end
+
+  defp queue_requirements_steer(port, %{pending_steer: nil} = turn_context, revision, prompt) do
+    send_requirements_steer(port, turn_context, revision, prompt)
+  end
+
+  defp queue_requirements_steer(_port, turn_context, revision, prompt) do
+    %{turn_context | queued_steer: %{revision: revision, prompt: prompt}}
+  end
+
+  defp send_requirements_steer(port, turn_context, revision, prompt) do
+    request_id = turn_context.next_request_id
+
+    send_message(port, %{
+      "method" => "turn/steer",
+      "id" => request_id,
+      "params" => %{
+        "threadId" => turn_context.thread_id,
+        "expectedTurnId" => turn_context.turn_id,
+        "input" => [%{"type" => "text", "text" => prompt}]
+      }
+    })
+
+    %{
+      turn_context
+      | pending_steer: %{request_id: request_id, revision: revision},
+        queued_steer: nil,
+        next_request_id: request_id + 1
+    }
+  end
+
+  defp maybe_handle_steer_response(
+         port,
+         {:ok, %{"id" => response_id} = payload},
+         %{pending_steer: %{request_id: request_id} = pending} = turn_context
+       )
+       when response_id == request_id and not is_map_key(payload, "method") and
+              (is_map_key(payload, "result") or is_map_key(payload, "error")) do
+    case payload do
+      %{"result" => %{"turnId" => turn_id}} when turn_id == turn_context.turn_id ->
+        notify_requirements_result(turn_context, {:ok, pending.revision})
+
+        updated_context = %{
+          turn_context
+          | requirements_revision: pending.revision,
+            pending_steer: nil
+        }
+
+        {:handled, maybe_send_queued_requirements(updated_context, port)}
+
+      %{"error" => error} ->
+        notify_requirements_result(turn_context, {:error, pending.revision, {:response_error, error}})
+
+        {:handled,
+         turn_context
+         |> Map.put(:pending_steer, nil)
+         |> maybe_send_queued_requirements(port)}
+
+      response ->
+        notify_requirements_result(
+          turn_context,
+          {:error, pending.revision, {:invalid_steer_response, response}}
+        )
+
+        {:handled,
+         turn_context
+         |> Map.put(:pending_steer, nil)
+         |> maybe_send_queued_requirements(port)}
+    end
+  end
+
+  defp maybe_handle_steer_response(_port, _decoded, _turn_context), do: :unhandled
+
+  defp maybe_send_queued_requirements(%{queued_steer: nil} = turn_context, _port),
+    do: turn_context
+
+  defp maybe_send_queued_requirements(
+         %{queued_steer: %{revision: revision}} = turn_context,
+         _port
+       )
+       when revision == turn_context.requirements_revision do
+    notify_requirements_result(turn_context, {:ok, revision})
+    %{turn_context | queued_steer: nil}
+  end
+
+  defp maybe_send_queued_requirements(
+         %{queued_steer: %{revision: revision, prompt: prompt}} = turn_context,
+         port
+       ) do
+    send_requirements_steer(port, %{turn_context | queued_steer: nil}, revision, prompt)
+  end
+
+  defp fail_pending_steer(%{pending_steer: nil} = turn_context, _reason), do: turn_context
+
+  defp fail_pending_steer(
+         %{pending_steer: %{revision: revision}} = turn_context,
+         reason
+       ) do
+    notify_requirements_result(turn_context, {:error, revision, reason})
+    %{turn_context | pending_steer: nil}
+  end
+
+  defp notify_requirements_result(turn_context, result) do
+    turn_context.on_requirements_result.(result)
   end
 
   defp emit_turn_event(on_message, event, payload, payload_string, port, payload_details) do
@@ -452,14 +691,17 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp handle_turn_method(
-         port,
-         on_message,
          payload,
          payload_string,
          method,
-         timeout_ms,
-         tool_executor,
-         auto_approve_requests
+         turn_context,
+         %{
+           port: port,
+           on_message: on_message,
+           timeout_ms: timeout_ms,
+           tool_executor: tool_executor,
+           auto_approve_requests: auto_approve_requests
+         }
        ) do
     metadata = metadata_from_message(port, payload)
 
@@ -484,7 +726,15 @@ defmodule SymphonyElixir.Codex.AppServer do
         {:error, {:turn_input_required, payload}}
 
       :approved ->
-        receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+        receive_loop(
+          port,
+          on_message,
+          timeout_ms,
+          "",
+          tool_executor,
+          auto_approve_requests,
+          turn_context
+        )
 
       :approval_required ->
         emit_message(
@@ -518,7 +768,16 @@ defmodule SymphonyElixir.Codex.AppServer do
           )
 
           Logger.debug("Codex notification: #{inspect(method)}")
-          receive_loop(port, on_message, timeout_ms, "", tool_executor, auto_approve_requests)
+
+          receive_loop(
+            port,
+            on_message,
+            timeout_ms,
+            "",
+            tool_executor,
+            auto_approve_requests,
+            turn_context
+          )
         end
     end
   end
@@ -1032,6 +1291,7 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp default_on_message(_message), do: :ok
+  defp default_on_requirements_result(_result), do: :ok
 
   defp tool_call_name(params) when is_map(params) do
     case Map.get(params, "tool") || Map.get(params, :tool) || Map.get(params, "name") || Map.get(params, :name) do

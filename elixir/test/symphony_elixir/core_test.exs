@@ -2,6 +2,7 @@ defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
   alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
+  alias SymphonyElixir.RequirementsContext
   alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
 
   defmodule ClaimingKaneoClient do
@@ -756,6 +757,179 @@ defmodule SymphonyElixir.CoreTest do
     assert Map.has_key?(updated_state.running, issue_id)
     assert MapSet.member?(updated_state.claimed, issue_id)
     assert updated_entry.issue.state == "In Progress"
+  end
+
+  test "reconcile steers one requirements revision and coalesces a newer pending revision" do
+    issue_id = "issue-requirements-steer"
+
+    original_issue = %Issue{
+      id: issue_id,
+      identifier: "OCL-27",
+      state: "In Progress",
+      title: "Original title",
+      description: "Original requirements"
+    }
+
+    original_revision = RequirementsContext.revision(original_issue)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: nil,
+          identifier: "OCL-27",
+          issue: original_issue,
+          requirements_delivered_revision: original_revision,
+          requirements_delivered_context: RequirementsContext.context(original_issue),
+          requirements_inflight_revision: nil,
+          requirements_target_revision: nil,
+          requirements_stale: false,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    first_update = %{
+      original_issue
+      | requirement_updates: ["## Requirements Update\nAdd expand all"]
+    }
+
+    first_revision = RequirementsContext.revision(first_update)
+    first_state = Orchestrator.reconcile_issue_states_for_test([first_update], state)
+
+    assert_receive {:steer_requirements, ^issue_id, ^first_revision, first_prompt}
+    assert first_prompt =~ "Add expand all"
+    assert first_state.running[issue_id].requirements_stale
+    assert first_state.running[issue_id].requirements_inflight_revision == first_revision
+
+    final_update = %{
+      first_update
+      | requirement_updates: [
+          "## Requirements Update\nAdd expand all",
+          "## Requirements Update\nAdd collapse all"
+        ]
+    }
+
+    final_revision = RequirementsContext.revision(final_update)
+    coalesced_state = Orchestrator.reconcile_issue_states_for_test([final_update], first_state)
+
+    refute_receive {:steer_requirements, ^issue_id, ^final_revision, _prompt}
+    assert coalesced_state.running[issue_id].requirements_target_revision == final_revision
+
+    assert {:noreply, delivered_state} =
+             Orchestrator.handle_info(
+               {:requirements_revision_result, issue_id, {:ok, first_revision}},
+               coalesced_state
+             )
+
+    assert_receive {:steer_requirements, ^issue_id, ^final_revision, final_prompt}
+    assert final_prompt =~ "collapse all"
+    assert delivered_state.running[issue_id].requirements_inflight_revision == final_revision
+    assert delivered_state.running[issue_id].requirements_stale
+  end
+
+  test "failed requirements steer remains stale and retries on the next refresh" do
+    issue_id = "issue-requirements-retry"
+
+    original_issue = %Issue{
+      id: issue_id,
+      identifier: "OCL-27",
+      state: "In Progress",
+      title: "Original title",
+      description: "Original requirements"
+    }
+
+    changed_issue = %{
+      original_issue
+      | requirement_updates: ["## Requirements Update\nChanged requirements"]
+    }
+
+    changed_revision = RequirementsContext.revision(changed_issue)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: nil,
+          identifier: "OCL-27",
+          issue: original_issue,
+          requirements_delivered_revision: RequirementsContext.revision(original_issue),
+          requirements_delivered_context: RequirementsContext.context(original_issue),
+          requirements_inflight_revision: nil,
+          requirements_target_revision: nil,
+          requirements_stale: false,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    pending_state = Orchestrator.reconcile_issue_states_for_test([changed_issue], state)
+    assert_receive {:steer_requirements, ^issue_id, ^changed_revision, _prompt}
+
+    assert {:noreply, failed_state} =
+             Orchestrator.handle_info(
+               {:requirements_revision_result, issue_id, {:error, changed_revision, :unsupported}},
+               pending_state
+             )
+
+    assert failed_state.running[issue_id].requirements_stale
+    assert is_nil(failed_state.running[issue_id].requirements_inflight_revision)
+
+    retried_state = Orchestrator.reconcile_issue_states_for_test([changed_issue], failed_state)
+    assert_receive {:steer_requirements, ^issue_id, ^changed_revision, _prompt}
+    assert retried_state.running[issue_id].requirements_inflight_revision == changed_revision
+  end
+
+  test "handoff state does not stop a worker whose latest requirements are still stale" do
+    issue_id = "issue-stale-handoff"
+
+    original_issue = %Issue{
+      id: issue_id,
+      identifier: "OCL-27",
+      state: "In Progress",
+      title: "Original title",
+      description: "Original requirements"
+    }
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: self(),
+          ref: nil,
+          identifier: "OCL-27",
+          issue: original_issue,
+          requirements_delivered_revision: RequirementsContext.revision(original_issue),
+          requirements_delivered_context: RequirementsContext.context(original_issue),
+          requirements_inflight_revision: nil,
+          requirements_target_revision: nil,
+          requirements_stale: false,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    handed_off_issue = %{
+      original_issue
+      | state: "In Review",
+        requirement_updates: ["## Requirements Update\nAdd collapse all"]
+    }
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([handed_off_issue], state)
+    updated_revision = RequirementsContext.revision(handed_off_issue)
+
+    assert Map.has_key?(updated_state.running, issue_id)
+    assert updated_state.running[issue_id].requirements_stale
+    assert_receive {:steer_requirements, ^issue_id, ^updated_revision, prompt}
+    assert prompt =~ "collapse all"
   end
 
   test "reconcile claims unassigned Kaneo running issues before refreshing active state" do

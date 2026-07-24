@@ -7,7 +7,16 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{AgentRunner, Config, ResumeAudit, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{
+    AgentRunner,
+    Config,
+    RequirementsContext,
+    ResumeAudit,
+    StatusDashboard,
+    Tracker,
+    Workspace
+  }
+
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -199,6 +208,21 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
 
+  def handle_info(
+        {:requirements_revision_result, issue_id, result},
+        %{running: running} = state
+      )
+      when is_binary(issue_id) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        updated_entry = integrate_requirements_result(running_entry, result)
+        {:noreply, %{state | running: Map.put(running, issue_id, updated_entry)}}
+    end
+  end
+
   def handle_info({:retry_issue, issue_id, retry_token}, state) do
     result =
       case pop_retry_attempt_state(state, issue_id, retry_token) do
@@ -349,12 +373,36 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
+    if terminal_issue_state?(issue.state, terminal_states) do
+      reconcile_terminal_issue_state(issue, state)
+    else
+      reconcile_nonterminal_issue_state(issue, state, active_states)
+    end
+  end
+
+  defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
+
+  defp reconcile_terminal_issue_state(%Issue{} = issue, state) do
     cond do
-      terminal_issue_state?(issue.state, terminal_states) ->
+      cancellation_issue_state?(issue.state) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
         terminate_running_issue(state, issue.id, true)
 
+      running_issue_requirements_stale?(state, issue) ->
+        Logger.info("Issue moved to a completion state with undelivered requirements: #{issue_context(issue)} state=#{issue.state}; keeping the active agent until requirements are reconciled")
+
+        refresh_running_claimed_issue_state(state, issue)
+
+      true ->
+        Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
+
+        terminate_running_issue(state, issue.id, true)
+    end
+  end
+
+  defp reconcile_nonterminal_issue_state(%Issue{} = issue, state, active_states) do
+    cond do
       !issue_routable_to_worker?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
@@ -363,14 +411,17 @@ defmodule SymphonyElixir.Orchestrator do
       active_issue_state?(issue.state, active_states) ->
         refresh_running_claimed_issue_state(state, issue)
 
+      running_issue_requirements_stale?(state, issue) ->
+        Logger.info("Issue moved to a handoff state with undelivered requirements: #{issue_context(issue)} state=#{issue.state}; keeping the active agent until requirements are reconciled")
+
+        refresh_running_claimed_issue_state(state, issue)
+
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
         terminate_running_issue(state, issue.id, false)
     end
   end
-
-  defp reconcile_issue_state(_issue, state, _active_states, _terminal_states), do: state
 
   defp reconcile_missing_running_issue_ids(%State{} = state, requested_issue_ids, issues)
        when is_list(requested_issue_ids) and is_list(issues) do
@@ -409,11 +460,140 @@ defmodule SymphonyElixir.Orchestrator do
   defp refresh_running_issue_state(%State{} = state, %Issue{} = issue) do
     case Map.get(state.running, issue.id) do
       %{issue: _} = running_entry ->
-        %{state | running: Map.put(state.running, issue.id, %{running_entry | issue: issue})}
+        updated_entry =
+          running_entry
+          |> queue_requirements_delivery(issue)
+          |> Map.put(:issue, issue)
+
+        %{state | running: Map.put(state.running, issue.id, updated_entry)}
 
       _ ->
         state
     end
+  end
+
+  defp running_issue_requirements_stale?(%State{} = state, %Issue{} = issue) do
+    case Map.get(state.running, issue.id) do
+      nil -> false
+      running_entry -> requirements_delivery_needed?(running_entry, issue)
+    end
+  end
+
+  defp queue_requirements_delivery(running_entry, %Issue{} = issue) do
+    if Map.has_key?(running_entry, :requirements_delivered_revision) do
+      do_queue_requirements_delivery(running_entry, issue)
+    else
+      running_entry
+      |> Map.put(:requirements_delivered_revision, RequirementsContext.revision(issue))
+      |> Map.put(:requirements_delivered_context, RequirementsContext.context(issue))
+      |> Map.put(:requirements_inflight_revision, nil)
+      |> Map.put(:requirements_inflight_context, nil)
+      |> Map.put(:requirements_target_revision, nil)
+      |> Map.put(:requirements_target_context, nil)
+      |> Map.put(:requirements_target_prompt, nil)
+      |> Map.put(:requirements_stale, false)
+    end
+  end
+
+  defp do_queue_requirements_delivery(running_entry, %Issue{} = issue) do
+    revision = RequirementsContext.revision(issue)
+    delivered_revision = delivered_requirements_revision(running_entry)
+
+    cond do
+      revision == delivered_revision and is_nil(Map.get(running_entry, :requirements_inflight_revision)) ->
+        running_entry
+        |> Map.put(:requirements_stale, false)
+        |> Map.put(:requirements_target_revision, nil)
+        |> Map.put(:requirements_target_context, nil)
+        |> Map.put(:requirements_target_prompt, nil)
+
+      revision == Map.get(running_entry, :requirements_target_revision) ->
+        maybe_dispatch_target_requirements(running_entry)
+
+      true ->
+        delivered_context =
+          Map.get(running_entry, :requirements_delivered_context) ||
+            running_entry
+            |> Map.get(:issue, issue)
+            |> RequirementsContext.context()
+
+        running_entry
+        |> Map.put(:requirements_stale, true)
+        |> Map.put(:requirements_target_revision, revision)
+        |> Map.put(:requirements_target_context, RequirementsContext.context(issue))
+        |> Map.put(:requirements_target_prompt, RequirementsContext.steer_prompt(issue, delivered_context))
+        |> maybe_dispatch_target_requirements()
+    end
+  end
+
+  defp maybe_dispatch_target_requirements(%{requirements_inflight_revision: inflight_revision} = running_entry)
+       when is_binary(inflight_revision),
+       do: running_entry
+
+  defp maybe_dispatch_target_requirements(running_entry) do
+    with pid when is_pid(pid) <- Map.get(running_entry, :pid),
+         revision when is_binary(revision) <- Map.get(running_entry, :requirements_target_revision),
+         prompt when is_binary(prompt) <- Map.get(running_entry, :requirements_target_prompt) do
+      send(pid, {:steer_requirements, running_entry.issue.id, revision, prompt})
+
+      running_entry
+      |> Map.put(:requirements_inflight_revision, revision)
+      |> Map.put(:requirements_inflight_context, Map.get(running_entry, :requirements_target_context))
+      |> Map.put(:requirements_stale, true)
+    else
+      _ -> running_entry
+    end
+  end
+
+  defp integrate_requirements_result(
+         %{requirements_inflight_revision: revision} = running_entry,
+         {:ok, revision}
+       )
+       when is_binary(revision) do
+    updated_entry =
+      running_entry
+      |> Map.put(:requirements_delivered_revision, revision)
+      |> Map.put(:requirements_delivered_context, Map.get(running_entry, :requirements_inflight_context))
+      |> Map.put(:requirements_inflight_revision, nil)
+      |> Map.put(:requirements_inflight_context, nil)
+
+    if Map.get(updated_entry, :requirements_target_revision) == revision do
+      updated_entry
+      |> Map.put(:requirements_stale, false)
+      |> Map.put(:requirements_target_revision, nil)
+      |> Map.put(:requirements_target_context, nil)
+      |> Map.put(:requirements_target_prompt, nil)
+    else
+      maybe_dispatch_target_requirements(updated_entry)
+    end
+  end
+
+  defp integrate_requirements_result(
+         %{requirements_inflight_revision: revision} = running_entry,
+         {:error, revision, reason}
+       )
+       when is_binary(revision) do
+    Logger.warning("Requirements steer failed for issue_identifier=#{Map.get(running_entry, :identifier)} revision=#{revision}: #{inspect(reason)}")
+
+    running_entry
+    |> Map.put(:requirements_inflight_revision, nil)
+    |> Map.put(:requirements_inflight_context, nil)
+    |> Map.put(:requirements_stale, true)
+  end
+
+  defp integrate_requirements_result(running_entry, _result), do: running_entry
+
+  defp requirements_delivery_needed?(running_entry, %Issue{} = issue) do
+    Map.has_key?(running_entry, :requirements_delivered_revision) and
+      (RequirementsContext.revision(issue) != delivered_requirements_revision(running_entry) or
+         Map.get(running_entry, :requirements_stale, false))
+  end
+
+  defp delivered_requirements_revision(running_entry) do
+    Map.get(running_entry, :requirements_delivered_revision) ||
+      running_entry
+      |> Map.get(:issue, %{})
+      |> RequirementsContext.revision()
   end
 
   defp refresh_running_claimed_issue_state(%State{} = state, %Issue{} = issue) do
@@ -760,6 +940,8 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)} worker_host=#{worker_host || "local"}")
 
+        requirements_revision = RequirementsContext.revision(issue)
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -780,6 +962,14 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
+            requirements_delivered_revision: requirements_revision,
+            requirements_delivered_context: RequirementsContext.context(issue),
+            requirements_inflight_revision: nil,
+            requirements_inflight_context: nil,
+            requirements_target_revision: nil,
+            requirements_target_context: nil,
+            requirements_target_prompt: nil,
+            requirements_stale: false,
             retry_attempt: normalize_retry_attempt(attempt),
             started_at: DateTime.utc_now()
           })
@@ -837,6 +1027,12 @@ defmodule SymphonyElixir.Orchestrator do
         cond do
           retry_candidate_issue?(refreshed_issue, terminal_state_set()) ->
             Logger.info("Issue still needs execution after normal agent exit: #{issue_context(refreshed_issue)} state=#{refreshed_issue.state}; scheduling continuation")
+
+            schedule_continuation_retry(state, issue_id, running_entry)
+
+          !cancellation_issue_state?(refreshed_issue.state) and
+              requirements_delivery_needed?(running_entry, refreshed_issue) ->
+            Logger.info("Issue requirements are newer than the completed worker context: #{issue_context(refreshed_issue)} state=#{refreshed_issue.state}; scheduling forced reconciliation")
 
             schedule_continuation_retry(state, issue_id, running_entry)
 
@@ -1493,6 +1689,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp normalize_assignee_id(_value), do: nil
+
+  defp cancellation_issue_state?(state_name) when is_binary(state_name) do
+    Config.Schema.normalize_issue_state(state_name) in [
+      "cancelled",
+      "canceled",
+      "duplicate",
+      "archived"
+    ]
+  end
+
+  defp cancellation_issue_state?(_state_name), do: false
 
   defp apply_codex_token_delta(
          %{codex_totals: codex_totals} = state,

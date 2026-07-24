@@ -20,6 +20,23 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
+While a Codex turn is active, each tracker refresh also compares a deterministic revision of the
+task title, description, and canonical operator requirement updates with the revision delivered to
+that worker. In Kaneo, an operator requirement update is comment activity whose first normalized
+line is exactly `## Requirements Update`; the client fetches those comments during running-task
+refresh and orders them by creation time plus activity ID. A newer revision is coalesced and sent to
+the same active thread with Codex app-server `turn/steer`. Symphony records the revision as
+delivered only after the app-server acknowledges it. Tracker state, timestamps, assignment,
+untagged comments, non-comment activity, and generated activity such as the Codex workpad are
+excluded from the revision, so normal progress updates cannot create a self-steering loop.
+If Kaneo activity cannot be fetched, running-task refresh fails closed instead of treating missing
+operator updates as an empty context.
+
+If steering fails or the turn finishes before the acknowledgement, the worker remains stale.
+Before accepting completion or a review/testing handoff, Symphony refetches the canonical task and
+starts a same-thread continuation containing the full current requirements. Cancellation states
+still stop the worker immediately.
+
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
 skills can make raw Linear GraphQL calls.
 
