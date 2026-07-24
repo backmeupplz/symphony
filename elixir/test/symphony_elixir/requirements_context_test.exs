@@ -11,6 +11,7 @@ defmodule SymphonyElixir.RequirementsContextTest do
       identifier: "OCL-1",
       title: "Steer the worker",
       description: "Deliver changed requirements",
+      requirement_updates: ["## Requirements Update\nAdd Expand all and Collapse all."],
       state: "in-progress",
       updated_at: ~U[2026-07-24 17:00:00Z]
     }
@@ -27,16 +28,66 @@ defmodule SymphonyElixir.RequirementsContextTest do
              |> RequirementsContext.revision()
 
     refute revision ==
+             RequirementsContext.revision(%{
+               issue
+               | requirement_updates: [
+                   "## Requirements Update\nAdd Expand all and Collapse all.",
+                   "## Requirements Update\nKeep the controls visible on mobile."
+                 ]
+             })
+
+    refute revision ==
              RequirementsContext.revision(%{issue | description: "Deliver changed requirements now"})
   end
 
+  test "only explicitly tagged Kaneo comments become operator requirement updates" do
+    activities = [
+      %{
+        "id" => "requirement-2",
+        "type" => "comment",
+        "content" => "## Requirements Update\r\nKeep the controls visible on mobile.",
+        "createdAt" => "2026-07-24T18:02:00Z"
+      },
+      %{
+        "id" => "workpad",
+        "type" => "comment",
+        "content" => "## Codex Workpad\n- [x] progress",
+        "createdAt" => "2026-07-24T18:03:00Z"
+      },
+      %{
+        "id" => "ordinary",
+        "type" => "comment",
+        "content" => "Could you take another look?",
+        "createdAt" => "2026-07-24T18:04:00Z"
+      },
+      %{
+        "id" => "requirement-1",
+        "type" => "comment",
+        "content" => "## Requirements Update\nAdd Expand all and Collapse all.",
+        "createdAt" => "2026-07-24T18:01:00Z"
+      },
+      %{
+        "id" => "status",
+        "type" => "status_changed",
+        "content" => "## Requirements Update\nThis is not comment activity.",
+        "createdAt" => "2026-07-24T18:00:00Z"
+      }
+    ]
+
+    assert RequirementsContext.operator_requirement_updates(activities) == [
+             "## Requirements Update\nAdd Expand all and Collapse all.",
+             "## Requirements Update\nKeep the controls visible on mobile."
+           ]
+  end
+
   test "steer prompt contains a mandatory concise delta and full canonical context" do
-    previous = %{title: "Old title", description: "Original requirement"}
+    previous = %{title: "Old title", description: "Original requirement", requirement_updates: []}
 
     issue = %Issue{
       identifier: "OCL-1",
       title: "New title",
-      description: "Original requirement\n\n- Add the new behavior"
+      description: "Original requirement\n\n- Add the new behavior",
+      requirement_updates: ["## Requirements Update\nAlso preserve the compact layout."]
     }
 
     prompt = RequirementsContext.steer_prompt(issue, previous)
@@ -46,6 +97,8 @@ defmodule SymphonyElixir.RequirementsContextTest do
     assert prompt =~ "Title changed"
     assert prompt =~ "New title"
     assert prompt =~ "Add the new behavior"
+    assert prompt =~ "Operator requirements changed"
+    assert prompt =~ "Also preserve the compact layout"
   end
 
   test "completion gate forces current requirements into a continuation before handoff" do

@@ -40,6 +40,92 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert issue.created_at == ~U[2026-04-30 12:00:00Z]
   end
 
+  test "fetches canonical operator requirement activity for refreshed issues" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a",
+      tracker_active_states: ["in-progress"],
+      tracker_terminal_states: ["done"]
+    )
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
+      send(self(), {:kaneo_request, opts[:method], opts[:url]})
+
+      cond do
+        String.ends_with?(opts[:url], "/task/tasks/project-a") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: [
+               %{
+                 "id" => "task-1",
+                 "number" => 27,
+                 "title" => "Steer active workers",
+                 "description" => "Original requirements",
+                 "status" => "in-progress"
+               }
+             ]
+           }}
+
+        String.ends_with?(opts[:url], "/activity/task-1") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: [
+               %{
+                 "id" => "workpad",
+                 "type" => "comment",
+                 "content" => "## Codex Workpad\nprogress",
+                 "createdAt" => "2026-07-24T18:02:00Z"
+               },
+               %{
+                 "id" => "requirement",
+                 "type" => "comment",
+                 "content" => "## Requirements Update\nAdd Expand all and Collapse all.",
+                 "createdAt" => "2026-07-24T18:01:00Z"
+               }
+             ]
+           }}
+      end
+    end)
+
+    assert {:ok, [issue]} = KaneoClient.fetch_issue_states_by_ids(["task-1"])
+
+    assert issue.requirement_updates == [
+             "## Requirements Update\nAdd Expand all and Collapse all."
+           ]
+
+    assert_receive {:kaneo_request, :get, "https://kaneo.test/api/activity/task-1"}
+  end
+
+  test "running issue refresh fails closed when requirement activity cannot be fetched" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a",
+      tracker_active_states: ["in-progress"],
+      tracker_terminal_states: ["done"]
+    )
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
+      if String.contains?(opts[:url], "/activity/") do
+        {:ok, %Req.Response{status: 503, body: "Unavailable"}}
+      else
+        {:ok,
+         %Req.Response{
+           status: 200,
+           body: [%{"id" => "task-1", "number" => 27, "status" => "in-progress"}]
+         }}
+      end
+    end)
+
+    assert {:error, {:kaneo_requirements_activity_status, "task-1", 503}} =
+             KaneoClient.fetch_issue_states_by_ids(["task-1"])
+  end
+
   test "normalizes Kaneo tasks with project-aware identifiers and repo routing" do
     issue =
       KaneoClient.normalize_task_for_test(
@@ -174,6 +260,9 @@ defmodule SymphonyElixir.KaneoClientTest do
 
       body =
         cond do
+          String.contains?(opts[:url], "/activity/") ->
+            []
+
           String.ends_with?(opts[:url], "/task/tasks/project-a") ->
             %{
               "data" => %{

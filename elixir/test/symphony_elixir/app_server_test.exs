@@ -113,7 +113,12 @@ defmodule SymphonyElixir.AppServerTest do
       }
 
       initial_revision = RequirementsContext.revision(issue)
-      updated_issue = %{issue | description: "Original requirements\n\nAdd collapse all"}
+
+      updated_issue = %{
+        issue
+        | requirement_updates: ["## Requirements Update\nAdd collapse all"]
+      }
+
       updated_revision = RequirementsContext.revision(updated_issue)
       test_pid = self()
 
@@ -154,7 +159,10 @@ defmodule SymphonyElixir.AppServerTest do
 
       handoff_issue = %{
         updated_issue
-        | description: "Original requirements\n\nAdd collapse all and expand all",
+        | requirement_updates: [
+            "## Requirements Update\nAdd collapse all",
+            "## Requirements Update\nAdd expand all"
+          ],
           state: "In Review"
       }
 

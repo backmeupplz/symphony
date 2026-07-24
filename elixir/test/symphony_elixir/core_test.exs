@@ -792,7 +792,11 @@ defmodule SymphonyElixir.CoreTest do
       retry_attempts: %{}
     }
 
-    first_update = %{original_issue | description: "Original requirements\n\nAdd expand all"}
+    first_update = %{
+      original_issue
+      | requirement_updates: ["## Requirements Update\nAdd expand all"]
+    }
+
     first_revision = RequirementsContext.revision(first_update)
     first_state = Orchestrator.reconcile_issue_states_for_test([first_update], state)
 
@@ -801,7 +805,14 @@ defmodule SymphonyElixir.CoreTest do
     assert first_state.running[issue_id].requirements_stale
     assert first_state.running[issue_id].requirements_inflight_revision == first_revision
 
-    final_update = %{first_update | description: "Original requirements\n\nAdd expand all and collapse all"}
+    final_update = %{
+      first_update
+      | requirement_updates: [
+          "## Requirements Update\nAdd expand all",
+          "## Requirements Update\nAdd collapse all"
+        ]
+    }
+
     final_revision = RequirementsContext.revision(final_update)
     coalesced_state = Orchestrator.reconcile_issue_states_for_test([final_update], first_state)
 
@@ -831,7 +842,11 @@ defmodule SymphonyElixir.CoreTest do
       description: "Original requirements"
     }
 
-    changed_issue = %{original_issue | description: "Changed requirements"}
+    changed_issue = %{
+      original_issue
+      | requirement_updates: ["## Requirements Update\nChanged requirements"]
+    }
+
     changed_revision = RequirementsContext.revision(changed_issue)
 
     state = %Orchestrator.State{
@@ -905,7 +920,7 @@ defmodule SymphonyElixir.CoreTest do
     handed_off_issue = %{
       original_issue
       | state: "In Review",
-        description: "Original requirements\n\nAdd collapse all"
+        requirement_updates: ["## Requirements Update\nAdd collapse all"]
     }
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([handed_off_issue], state)

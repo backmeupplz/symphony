@@ -5,7 +5,7 @@ defmodule SymphonyElixir.Kaneo.Client do
 
   require Logger
 
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{Config, Linear.Issue, RequirementsContext}
 
   @default_endpoint "https://cloud.kaneo.app/api"
   @linear_default_endpoint "https://api.linear.app/graphql"
@@ -49,7 +49,9 @@ defmodule SymphonyElixir.Kaneo.Client do
       |> fetch_projects_by_states(&project_refresh_states/1)
       |> case do
         {:ok, issues} ->
-          {:ok, Enum.filter(issues, &MapSet.member?(wanted_ids, &1.id))}
+          issues
+          |> Enum.filter(&MapSet.member?(wanted_ids, &1.id))
+          |> hydrate_requirement_updates()
 
         {:error, reason} ->
           {:error, reason}
@@ -163,6 +165,34 @@ defmodule SymphonyElixir.Kaneo.Client do
     end)
     |> case do
       {:ok, issues} -> {:ok, sort_and_dedupe_issues(issues)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp hydrate_requirement_updates(issues) when is_list(issues) do
+    Enum.reduce_while(issues, {:ok, []}, fn
+      %Issue{id: issue_id} = issue, {:ok, hydrated} when is_binary(issue_id) ->
+        case request(:get, "/activity/#{URI.encode(issue_id)}") do
+          {:ok, %{status: status, body: body}} when status in 200..299 ->
+            issue = %{
+              issue
+              | requirement_updates: RequirementsContext.operator_requirement_updates(body)
+            }
+
+            {:cont, {:ok, [issue | hydrated]}}
+
+          {:ok, %{status: status}} ->
+            {:halt, {:error, {:kaneo_requirements_activity_status, issue_id, status}}}
+
+          {:error, reason} ->
+            {:halt, {:error, {:kaneo_requirements_activity_fetch, issue_id, reason}}}
+        end
+
+      issue, {:ok, hydrated} ->
+        {:cont, {:ok, [issue | hydrated]}}
+    end)
+    |> case do
+      {:ok, hydrated} -> {:ok, Enum.reverse(hydrated)}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -306,6 +336,7 @@ defmodule SymphonyElixir.Kaneo.Client do
       source_repo_ref: repo_value(primary_repo, "repo_ref"),
       source_repos: selected_repos,
       workflow_file: repo_value(primary_repo, "workflow_file") || project.workflow_file,
+      requirement_updates: [],
       blocked_by: [],
       labels: [],
       assigned_to_worker: assigned_to_worker?(assignee_id, project.assignee_filter),

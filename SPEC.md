@@ -989,9 +989,15 @@ Continuation processing:
 Active requirements refresh:
 
 - The orchestrator MUST derive a deterministic requirements revision from canonical operator-owned
-  task content. The current implementation uses normalized title and description.
+  task content. For Kaneo, the current implementation uses normalized title, description, and
+  chronological comment activity whose first normalized line is exactly `## Requirements Update`.
+  Operators MUST use that heading when a requirement belongs in the live worker context without
+  rewriting the task description.
 - Status, assignment, timestamps, labels, generated workpads, and progress/activity chatter MUST NOT
-  affect the revision.
+  affect the revision. Untagged comments and non-comment Kaneo activity are likewise excluded.
+- If Kaneo requirement activity cannot be fetched during a running-task refresh, the refresh MUST
+  fail closed so neither the delivered revision nor completion/handoff can advance from incomplete
+  canonical context.
 - When polling observes a newer revision for a running worker, it MUST route the update through the
   process that owns the app-server transport. Concurrent orchestrator processes MUST NOT write
   directly to the JSON-RPC stream.
