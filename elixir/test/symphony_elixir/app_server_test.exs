@@ -1,6 +1,9 @@
 defmodule SymphonyElixir.AppServerTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.AgentRunner
+  alias SymphonyElixir.RequirementsContext
+
   test "app server rejects the workspace root and paths outside workspace root" do
     test_root =
       Path.join(
@@ -34,6 +37,135 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert {:error, {:invalid_workspace_cwd, :outside_workspace_root, _path, _root}} =
                AppServer.run(outside_workspace, "guard", issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "active-turn race steers one revision and gates a newer handoff revision" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-steer-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "OCL-27")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-steer.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEX_STEER_TRACE")
+
+      on_exit(fn ->
+        if is_binary(previous_trace) do
+          System.put_env("SYMP_TEST_CODEX_STEER_TRACE", previous_trace)
+        else
+          System.delete_env("SYMP_TEST_CODEX_STEER_TRACE")
+        end
+      end)
+
+      System.put_env("SYMP_TEST_CODEX_STEER_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEX_STEER_TRACE:-/tmp/codex-steer.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-steer"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-steer"}}}'
+            printf '%s\\n' '{"method":"item/started","params":{"item":{"id":"ready"}}}'
+            ;;
+          5)
+            printf '%s\\n' '{"id":4,"result":{"turnId":"turn-steer"}}'
+            printf '%s\\n' '{"method":"turn/completed"}'
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server"
+      )
+
+      issue = %Issue{
+        id: "issue-steer",
+        identifier: "OCL-27",
+        title: "Steer active worker",
+        description: "Original requirements",
+        state: "In Progress"
+      }
+
+      initial_revision = RequirementsContext.revision(issue)
+      updated_issue = %{issue | description: "Original requirements\n\nAdd collapse all"}
+      updated_revision = RequirementsContext.revision(updated_issue)
+      test_pid = self()
+
+      on_message = fn
+        %{event: :notification} ->
+          send(
+            self(),
+            {:steer_requirements, issue.id, updated_revision, RequirementsContext.steer_prompt(updated_issue, RequirementsContext.context(issue))}
+          )
+
+        _message ->
+          :ok
+      end
+
+      assert {:ok, %{requirements_revision: ^updated_revision}} =
+               AppServer.run(workspace, "Start the long turn", issue,
+                 requirements_revision: initial_revision,
+                 on_requirements_result: fn result ->
+                   send(test_pid, {:requirements_result, result})
+                 end,
+                 on_message: on_message
+               )
+
+      assert_receive {:requirements_result, {:ok, ^updated_revision}}
+
+      steer_payload =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.find(&(&1["method"] == "turn/steer"))
+
+      assert steer_payload["id"] == 4
+      assert steer_payload["params"]["threadId"] == "thread-steer"
+      assert steer_payload["params"]["expectedTurnId"] == "turn-steer"
+      assert get_in(steer_payload, ["params", "input", Access.at(0), "text"]) =~ "collapse all"
+
+      handoff_issue = %{
+        updated_issue
+        | description: "Original requirements\n\nAdd collapse all and expand all",
+          state: "In Review"
+      }
+
+      assert {:reconcile, ^handoff_issue, handoff_revision} =
+               AgentRunner.completion_decision_for_test(
+                 updated_issue,
+                 fn ["issue-steer"] -> {:ok, [handoff_issue]} end,
+                 updated_revision
+               )
+
+      assert handoff_revision == RequirementsContext.revision(handoff_issue)
     after
       File.rm_rf(test_root)
     end

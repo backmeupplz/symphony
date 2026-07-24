@@ -6,7 +6,7 @@ defmodule SymphonyElixir.AgentRunner do
   require Logger
   alias SymphonyElixir.Claude.PrintRunner
   alias SymphonyElixir.Codex.AppServer
-  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Linear.Issue, PromptBuilder, RequirementsContext, Tracker, Workspace}
 
   @type worker_host :: String.t() | nil
 
@@ -92,6 +92,16 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
+  defp requirements_result_handler(recipient, %Issue{id: issue_id})
+       when is_binary(issue_id) and is_pid(recipient) do
+    fn result ->
+      send(recipient, {:requirements_revision_result, issue_id, result})
+      :ok
+    end
+  end
+
+  defp requirements_result_handler(_recipient, _issue), do: fn _result -> :ok end
+
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
     send(
@@ -111,10 +121,20 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
+    requirements_revision = RequirementsContext.revision(issue)
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
       try do
-        do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
+        turn_context = %{
+          app_session: session,
+          workspace: workspace,
+          codex_update_recipient: codex_update_recipient,
+          opts: opts,
+          issue_state_fetcher: issue_state_fetcher,
+          max_turns: max_turns
+        }
+
+        do_run_codex_turns(turn_context, issue, 1, requirements_revision, nil)
       after
         AppServer.stop_session(session)
       end
@@ -134,39 +154,73 @@ defmodule SymphonyElixir.AgentRunner do
     # One stable session id for the whole run so continuation turns resume the same
     # Claude conversation (matches Codex's persistent app-server session).
     claude_session_id = uuid4()
+    requirements_revision = RequirementsContext.revision(issue)
 
-    do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, 1, max_turns, claude_session_id)
+    turn_context = %{
+      workspace: workspace,
+      codex_update_recipient: codex_update_recipient,
+      opts: opts,
+      issue_state_fetcher: issue_state_fetcher,
+      worker_host: worker_host,
+      max_turns: max_turns,
+      claude_session_id: claude_session_id
+    }
+
+    do_run_claude_turns(turn_context, issue, 1, requirements_revision, nil)
   end
 
-  defp do_run_claude_turns(workspace, issue, codex_update_recipient, opts, issue_state_fetcher, worker_host, turn_number, max_turns, claude_session_id) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_claude_turns(
+         turn_context,
+         issue,
+         turn_number,
+         requirements_revision,
+         prompt_override
+       ) do
+    prompt =
+      prompt_override ||
+        build_turn_prompt(issue, turn_context.opts, turn_number, turn_context.max_turns)
 
     with {:ok, turn_session} <-
            PrintRunner.run(
-             workspace,
+             turn_context.workspace,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue),
-             worker_host: worker_host,
-             session_id: claude_session_id,
+             on_message: codex_message_handler(turn_context.codex_update_recipient, issue),
+             worker_host: turn_context.worker_host,
+             session_id: turn_context.claude_session_id,
              resume: turn_number > 1
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{turn_context.workspace} turn=#{turn_number}/#{turn_context.max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      case continue_with_issue?(
+             issue,
+             turn_context.issue_state_fetcher,
+             requirements_revision
+           ) do
+        {:reconcile, refreshed_issue, refreshed_revision}
+        when turn_number < turn_context.max_turns ->
+          Logger.info("Forcing requirements reconciliation for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{turn_context.max_turns}")
 
           do_run_claude_turns(
-            workspace,
+            turn_context,
             refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
-            worker_host,
             turn_number + 1,
-            max_turns,
-            claude_session_id
+            refreshed_revision,
+            RequirementsContext.steer_prompt(refreshed_issue, RequirementsContext.context(issue))
+          )
+
+        {:reconcile, refreshed_issue, refreshed_revision} ->
+          {:error, {:requirements_stale_at_max_turns, refreshed_issue.id, requirements_revision, refreshed_revision}}
+
+        {:continue, refreshed_issue} when turn_number < turn_context.max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{turn_context.max_turns}")
+
+          do_run_claude_turns(
+            turn_context,
+            refreshed_issue,
+            turn_number + 1,
+            requirements_revision,
+            nil
           )
 
         {:continue, refreshed_issue} ->
@@ -183,31 +237,59 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp do_run_codex_turns(app_session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, turn_number, max_turns) do
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
+  defp do_run_codex_turns(
+         turn_context,
+         issue,
+         turn_number,
+         requirements_revision,
+         prompt_override
+       ) do
+    prompt =
+      prompt_override ||
+        build_turn_prompt(issue, turn_context.opts, turn_number, turn_context.max_turns)
 
     with {:ok, turn_session} <-
            AppServer.run_turn(
-             app_session,
+             turn_context.app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(turn_context.codex_update_recipient, issue),
+             on_requirements_result: requirements_result_handler(turn_context.codex_update_recipient, issue),
+             requirements_revision: requirements_revision
            ) do
-      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
+      Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{turn_context.workspace} turn=#{turn_number}/#{turn_context.max_turns}")
 
-      case continue_with_issue?(issue, issue_state_fetcher) do
-        {:continue, refreshed_issue} when turn_number < max_turns ->
-          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{max_turns}")
+      delivered_revision = turn_session[:requirements_revision] || requirements_revision
+
+      case continue_with_issue?(
+             issue,
+             turn_context.issue_state_fetcher,
+             delivered_revision
+           ) do
+        {:reconcile, refreshed_issue, refreshed_revision}
+        when turn_number < turn_context.max_turns ->
+          Logger.info("Forcing requirements reconciliation for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{turn_context.max_turns}")
 
           do_run_codex_turns(
-            app_session,
-            workspace,
+            turn_context,
             refreshed_issue,
-            codex_update_recipient,
-            opts,
-            issue_state_fetcher,
             turn_number + 1,
-            max_turns
+            refreshed_revision,
+            RequirementsContext.steer_prompt(refreshed_issue, RequirementsContext.context(issue))
+          )
+
+        {:reconcile, refreshed_issue, refreshed_revision} ->
+          {:error, {:requirements_stale_at_max_turns, refreshed_issue.id, delivered_revision, refreshed_revision}}
+
+        {:continue, refreshed_issue} when turn_number < turn_context.max_turns ->
+          Logger.info("Continuing agent run for #{issue_context(refreshed_issue)} after normal turn completion turn=#{turn_number}/#{turn_context.max_turns}")
+
+          do_run_codex_turns(
+            turn_context,
+            refreshed_issue,
+            turn_number + 1,
+            delivered_revision,
+            nil
           )
 
         {:continue, refreshed_issue} ->
@@ -238,13 +320,28 @@ defmodule SymphonyElixir.AgentRunner do
     """
   end
 
-  defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher) when is_binary(issue_id) do
+  defp continue_with_issue?(
+         %Issue{id: issue_id} = issue,
+         issue_state_fetcher,
+         requirements_revision
+       )
+       when is_binary(issue_id) do
     case issue_state_fetcher.([issue_id]) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
-        if active_issue_state?(refreshed_issue.state) do
-          {:continue, refreshed_issue}
-        else
-          {:done, refreshed_issue}
+        refreshed_revision = RequirementsContext.revision(refreshed_issue)
+
+        cond do
+          cancellation_issue_state?(refreshed_issue.state) ->
+            {:done, refreshed_issue}
+
+          refreshed_revision != requirements_revision ->
+            {:reconcile, refreshed_issue, refreshed_revision}
+
+          active_issue_state?(refreshed_issue.state) ->
+            {:continue, refreshed_issue}
+
+          true ->
+            {:done, refreshed_issue}
         end
 
       {:ok, []} ->
@@ -255,13 +352,31 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+  defp continue_with_issue?(issue, _issue_state_fetcher, _requirements_revision),
+    do: {:done, issue}
+
+  @doc false
+  @spec completion_decision_for_test(Issue.t(), ([String.t()] -> term()), String.t()) ::
+          {:continue, Issue.t()}
+          | {:reconcile, Issue.t(), String.t()}
+          | {:done, Issue.t()}
+          | {:error, term()}
+  def completion_decision_for_test(%Issue{} = issue, issue_state_fetcher, requirements_revision)
+      when is_function(issue_state_fetcher, 1) and is_binary(requirements_revision) do
+    continue_with_issue?(issue, issue_state_fetcher, requirements_revision)
+  end
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     Config.active_execution_state?(state_name)
   end
 
   defp active_issue_state?(_state_name), do: false
+
+  defp cancellation_issue_state?(state_name) when is_binary(state_name) do
+    normalized_state(state_name) in ["cancelled", "canceled", "duplicate", "archived"]
+  end
+
+  defp cancellation_issue_state?(_state_name), do: false
 
   defp selected_worker_host(nil, []), do: nil
 

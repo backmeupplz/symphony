@@ -986,6 +986,27 @@ Continuation processing:
 - The app-server subprocess SHOULD remain alive across those continuation turns and be stopped only
   when the worker run is ending.
 
+Active requirements refresh:
+
+- The orchestrator MUST derive a deterministic requirements revision from canonical operator-owned
+  task content. The current implementation uses normalized title and description.
+- Status, assignment, timestamps, labels, generated workpads, and progress/activity chatter MUST NOT
+  affect the revision.
+- When polling observes a newer revision for a running worker, it MUST route the update through the
+  process that owns the app-server transport. Concurrent orchestrator processes MUST NOT write
+  directly to the JSON-RPC stream.
+- Pending updates MUST coalesce to the newest observed revision. The delivered revision advances only
+  after the app-server acknowledges the steer.
+- With the Codex 0.144.1 schema used for this implementation, Symphony sends `turn/steer` with
+  `threadId`, `expectedTurnId`, and text `input`; success returns `turnId`. Implementations MUST
+  regenerate the targeted CLI schema with
+  `codex app-server generate-json-schema --experimental --out <dir>` rather than assuming this shape
+  is permanent.
+- A failed steer leaves the worker stale and is retried through normal task refresh. If the active
+  turn finishes first, the completion gate MUST refetch canonical requirements and start a same-thread
+  continuation containing the full current context before completion or handoff is accepted.
+- Explicit cancellation states retain precedence and stop the worker without forced reconciliation.
+
 Transport handling requirements:
 
 - Follow the transport and framing rules of the targeted Codex app-server version.
@@ -1124,7 +1145,11 @@ Behavior:
 2. Build prompt from workflow template.
 3. Start app-server session.
 4. Forward app-server events to orchestrator.
-5. On any error, fail the worker attempt (the orchestrator will retry).
+5. Accept orchestrator requirements-update messages while a turn is active and route them through
+   app-server steering.
+6. Refetch canonical requirements before completion and force a full-context continuation when the
+   delivered revision is stale.
+7. On any error, fail the worker attempt (the orchestrator will retry).
 
 Note:
 

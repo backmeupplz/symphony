@@ -20,6 +20,18 @@ This directory contains the current Elixir/OTP implementation of Symphony, based
 4. Sends a workflow prompt to Codex
 5. Keeps Codex working on the issue until the work is done
 
+While a Codex turn is active, each tracker refresh also compares a deterministic revision of the
+task title and description with the revision delivered to that worker. A newer revision is
+coalesced and sent to the same active thread with Codex app-server `turn/steer`. Symphony records
+the revision as delivered only after the app-server acknowledges it. Tracker state, timestamps,
+assignment, and generated activity such as the Codex workpad are excluded from the revision, so
+normal progress updates cannot create a self-steering loop.
+
+If steering fails or the turn finishes before the acknowledgement, the worker remains stale.
+Before accepting completion or a review/testing handoff, Symphony refetches the canonical task and
+starts a same-thread continuation containing the full current requirements. Cancellation states
+still stop the worker immediately.
+
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
 skills can make raw Linear GraphQL calls.
 
