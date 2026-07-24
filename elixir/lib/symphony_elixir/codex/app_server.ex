@@ -607,7 +607,8 @@ defmodule SymphonyElixir.Codex.AppServer do
          {:ok, %{"id" => response_id} = payload},
          %{pending_steer: %{request_id: request_id} = pending} = turn_context
        )
-       when response_id == request_id do
+       when response_id == request_id and not is_map_key(payload, "method") and
+              (is_map_key(payload, "result") or is_map_key(payload, "error")) do
     case payload do
       %{"result" => %{"turnId" => turn_id}} when turn_id == turn_context.turn_id ->
         notify_requirements_result(turn_context, {:ok, pending.revision})
