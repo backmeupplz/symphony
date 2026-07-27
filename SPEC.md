@@ -1008,16 +1008,24 @@ Active requirements refresh:
 - When polling observes a newer revision for a running worker, it MUST route the update through the
   process that owns the app-server transport. Concurrent orchestrator processes MUST NOT write
   directly to the JSON-RPC stream.
-- Pending updates MUST coalesce to the newest observed revision. The delivered revision advances only
-  after the app-server acknowledges the steer.
+- Pending updates MUST coalesce to the newest observed revision. A successful app-server response
+  marks the revision accepted by the active turn but MUST NOT mark it delivered or clear the stale
+  handoff latch. The delivered revision advances only when that same turn completes after accepting
+  the revision, proving the queued input had an opportunity to surface and be reconciled.
 - With the Codex 0.144.1 schema used for this implementation, Symphony sends `turn/steer` with
   `threadId`, `expectedTurnId`, and text `input`; success returns `turnId`. Implementations MUST
   regenerate the targeted CLI schema with
   `codex app-server generate-json-schema --experimental --out <dir>` rather than assuming this shape
   is permanent.
+- While an accepted steer is queued behind tool work, repeated handoff polls MUST retain the original
+  worker without resending that revision. A newer target MAY be sent after the prior request is
+  accepted, but the latch remains stale until the newest accepted revision is reconciled at turn
+  completion.
 - A failed steer leaves the worker stale and is retried through normal task refresh. If the active
-  turn finishes first, the completion gate MUST refetch canonical requirements and start a same-thread
-  continuation containing the full current context before completion or handoff is accepted.
+  turn finishes before the target revision is accepted, or canonical context advances again, the
+  completion gate MUST refetch requirements and start a same-thread continuation containing the full
+  current context before completion or handoff is accepted. This completion-gate continuation is the
+  compatibility fallback when active-turn steering cannot deliver the current revision.
 - Explicit cancellation states retain precedence and stop the worker without forced reconciliation.
 
 Transport handling requirements:

@@ -142,7 +142,8 @@ defmodule SymphonyElixir.AppServerTest do
                  on_message: on_message
                )
 
-      assert_receive {:requirements_result, {:ok, ^updated_revision}}
+      assert_receive {:requirements_result, {:accepted, ^updated_revision}}
+      assert_receive {:requirements_result, {:reconciled, ^updated_revision}}
 
       steer_payload =
         trace_file
@@ -174,6 +175,230 @@ defmodule SymphonyElixir.AppServerTest do
                )
 
       assert handoff_revision == RequirementsContext.revision(handoff_issue)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "blocking tool handoff stays on the same turn through accepted coalesced requirements" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-app-server-reconciliation-latch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      workspace = Path.join(workspace_root, "OCL-27")
+      codex_binary = Path.join(test_root, "fake-codex")
+      trace_file = Path.join(test_root, "codex-reconciliation-latch.trace")
+      previous_trace = System.get_env("SYMP_TEST_CODEX_RECONCILIATION_TRACE")
+
+      on_exit(fn ->
+        restore_env("SYMP_TEST_CODEX_RECONCILIATION_TRACE", previous_trace)
+      end)
+
+      System.put_env("SYMP_TEST_CODEX_RECONCILIATION_TRACE", trace_file)
+      File.mkdir_p!(workspace)
+
+      File.write!(codex_binary, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_CODEX_RECONCILIATION_TRACE:-/tmp/codex-reconciliation-latch.trace}"
+      count=0
+
+      while IFS= read -r line; do
+        count=$((count + 1))
+        printf 'JSON:%s\\n' "$line" >> "$trace_file"
+
+        case "$count" in
+          1)
+            printf '%s\\n' '{"id":1,"result":{}}'
+            ;;
+          2)
+            ;;
+          3)
+            printf '%s\\n' '{"id":2,"result":{"thread":{"id":"thread-reconciliation-latch"}}}'
+            ;;
+          4)
+            printf '%s\\n' '{"id":3,"result":{"turn":{"id":"turn-reconciliation-latch"}}}'
+            printf '%s\\n' '{"id":100,"method":"item/tool/call","params":{"name":"blocking_tool","callId":"call-initial","threadId":"thread-reconciliation-latch","turnId":"turn-reconciliation-latch","arguments":{"phase":"initial"}}}'
+            ;;
+          5)
+            ;;
+          6)
+            printf '%s\\n' '{"id":4,"result":{"turnId":"turn-reconciliation-latch"}}'
+            ;;
+          7)
+            printf '%s\\n' '{"id":5,"result":{"turnId":"turn-reconciliation-latch"}}'
+            printf '%s\\n' '{"id":101,"method":"item/tool/call","params":{"name":"blocking_tool","callId":"call-final","threadId":"thread-reconciliation-latch","turnId":"turn-reconciliation-latch","arguments":{"phase":"final"}}}'
+            ;;
+          8)
+            printf '%s\\n' '{"method":"turn/completed"}'
+            exit 0
+            ;;
+        esac
+      done
+      """)
+
+      File.chmod!(codex_binary, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        codex_command: "#{codex_binary} app-server",
+        codex_turn_timeout_ms: 5_000
+      )
+
+      issue_id = "issue-reconciliation-latch"
+
+      original_issue = %Issue{
+        id: issue_id,
+        identifier: "OCL-27",
+        title: "Steer active worker",
+        description: "Original requirements",
+        state: "In Progress"
+      }
+
+      beta_issue = %{
+        original_issue
+        | requirement_updates: ["## Requirements Update\nBETA"]
+      }
+
+      gamma_issue = %{
+        beta_issue
+        | state: "In Review",
+          requirement_updates: [
+            "## Requirements Update\nBETA",
+            "## Requirements Update\nGAMMA"
+          ]
+      }
+
+      original_revision = RequirementsContext.revision(original_issue)
+      beta_revision = RequirementsContext.revision(beta_issue)
+      gamma_revision = RequirementsContext.revision(gamma_issue)
+      test_pid = self()
+
+      tool_executor = fn "blocking_tool", %{"phase" => phase} ->
+        send(test_pid, {:blocking_tool_started, phase, self()})
+
+        receive do
+          {:release_blocking_tool, ^phase} ->
+            %{"success" => true, "contentItems" => []}
+        end
+      end
+
+      task =
+        Task.async(fn ->
+          AppServer.run(workspace, "Start the blocking turn", original_issue,
+            requirements_revision: original_revision,
+            on_requirements_result: fn result ->
+              send(test_pid, {:requirements_result, result})
+            end,
+            tool_executor: tool_executor
+          )
+        end)
+
+      task_pid = task.pid
+      assert_receive {:blocking_tool_started, "initial", ^task_pid}, 1_000
+
+      state = %Orchestrator.State{
+        running: %{
+          issue_id => %{
+            pid: task.pid,
+            ref: nil,
+            identifier: "OCL-27",
+            issue: original_issue,
+            requirements_delivered_revision: original_revision,
+            requirements_delivered_context: RequirementsContext.context(original_issue),
+            requirements_inflight_revision: nil,
+            requirements_inflight_context: nil,
+            requirements_accepted_revision: nil,
+            requirements_accepted_context: nil,
+            requirements_target_revision: nil,
+            requirements_target_context: nil,
+            requirements_target_prompt: nil,
+            requirements_stale: false,
+            started_at: DateTime.utc_now()
+          }
+        },
+        claimed: MapSet.new([issue_id]),
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        retry_attempts: %{}
+      }
+
+      beta_state = Orchestrator.reconcile_issue_states_for_test([beta_issue], state)
+      gamma_state = Orchestrator.reconcile_issue_states_for_test([gamma_issue], beta_state)
+      pre_ack_poll = Orchestrator.reconcile_issue_states_for_test([gamma_issue], gamma_state)
+
+      assert Map.has_key?(pre_ack_poll.running, issue_id)
+      assert pre_ack_poll.running[issue_id].requirements_inflight_revision == beta_revision
+      assert pre_ack_poll.running[issue_id].requirements_target_revision == gamma_revision
+      assert Process.alive?(task.pid)
+
+      send(task.pid, {:release_blocking_tool, "initial"})
+
+      assert_receive {:requirements_result, {:accepted, ^beta_revision}}, 1_000
+
+      assert {:noreply, beta_accepted_state} =
+               Orchestrator.handle_info(
+                 {:requirements_revision_result, issue_id, {:accepted, beta_revision}},
+                 pre_ack_poll
+               )
+
+      assert_receive {:requirements_result, {:accepted, ^gamma_revision}}, 1_000
+
+      assert {:noreply, gamma_accepted_state} =
+               Orchestrator.handle_info(
+                 {:requirements_revision_result, issue_id, {:accepted, gamma_revision}},
+                 beta_accepted_state
+               )
+
+      assert_receive {:blocking_tool_started, "final", ^task_pid}, 1_000
+
+      accepted_poll_one =
+        Orchestrator.reconcile_issue_states_for_test([gamma_issue], gamma_accepted_state)
+
+      accepted_poll_two =
+        Orchestrator.reconcile_issue_states_for_test([gamma_issue], accepted_poll_one)
+
+      assert Map.has_key?(accepted_poll_two.running, issue_id)
+      assert accepted_poll_two.running[issue_id].requirements_stale
+      assert accepted_poll_two.running[issue_id].requirements_accepted_revision == gamma_revision
+      assert accepted_poll_two.running[issue_id].requirements_delivered_revision == original_revision
+      assert Process.alive?(task.pid)
+
+      send(task.pid, {:release_blocking_tool, "final"})
+
+      assert_receive {:requirements_result, {:reconciled, ^gamma_revision}}, 1_000
+
+      assert {:noreply, reconciled_state} =
+               Orchestrator.handle_info(
+                 {:requirements_revision_result, issue_id, {:reconciled, gamma_revision}},
+                 accepted_poll_two
+               )
+
+      assert {:ok, %{requirements_revision: ^gamma_revision, turn_id: "turn-reconciliation-latch"}} =
+               Task.await(task, 1_000)
+
+      stopped_state =
+        Orchestrator.reconcile_issue_states_for_test([gamma_issue], reconciled_state)
+
+      refute Map.has_key?(stopped_state.running, issue_id)
+
+      steer_payloads =
+        trace_file
+        |> File.read!()
+        |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim_leading(&1, "JSON:"))
+        |> Enum.map(&Jason.decode!/1)
+        |> Enum.filter(&(&1["method"] == "turn/steer"))
+
+      assert Enum.map(steer_payloads, & &1["id"]) == [4, 5]
+      assert Enum.all?(steer_payloads, &(&1["params"]["threadId"] == "thread-reconciliation-latch"))
+      assert Enum.all?(steer_payloads, &(&1["params"]["expectedTurnId"] == "turn-reconciliation-latch"))
+
+      [beta_payload, gamma_payload] = steer_payloads
+      assert get_in(beta_payload, ["params", "input", Access.at(0), "text"]) =~ "BETA"
+      assert get_in(gamma_payload, ["params", "input", Access.at(0), "text"]) =~ "GAMMA"
     after
       File.rm_rf(test_root)
     end
@@ -302,7 +527,8 @@ defmodule SymphonyElixir.AppServerTest do
 
       assert_received {:tool_called, "linear_graphql", %{"query" => "query Viewer { viewer { id } }"}}
 
-      assert_receive {:requirements_result, {:ok, ^updated_revision}}
+      assert_receive {:requirements_result, {:accepted, ^updated_revision}}
+      assert_receive {:requirements_result, {:reconciled, ^updated_revision}}
       refute_receive {:requirements_result, _result}
 
       trace_payloads =
