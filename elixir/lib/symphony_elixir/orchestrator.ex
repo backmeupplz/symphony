@@ -503,6 +503,8 @@ defmodule SymphonyElixir.Orchestrator do
       |> Map.put(:requirements_delivered_context, RequirementsContext.context(issue))
       |> Map.put(:requirements_inflight_revision, nil)
       |> Map.put(:requirements_inflight_context, nil)
+      |> Map.put(:requirements_accepted_revision, nil)
+      |> Map.put(:requirements_accepted_context, nil)
       |> Map.put(:requirements_target_revision, nil)
       |> Map.put(:requirements_target_context, nil)
       |> Map.put(:requirements_target_prompt, nil)
@@ -515,7 +517,9 @@ defmodule SymphonyElixir.Orchestrator do
     delivered_revision = delivered_requirements_revision(running_entry)
 
     cond do
-      revision == delivered_revision and is_nil(Map.get(running_entry, :requirements_inflight_revision)) ->
+      revision == delivered_revision and
+        is_nil(Map.get(running_entry, :requirements_inflight_revision)) and
+          is_nil(Map.get(running_entry, :requirements_accepted_revision)) ->
         running_entry
         |> Map.put(:requirements_stale, false)
         |> Map.put(:requirements_target_revision, nil)
@@ -545,6 +549,15 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(inflight_revision),
        do: running_entry
 
+  defp maybe_dispatch_target_requirements(
+         %{
+           requirements_accepted_revision: revision,
+           requirements_target_revision: revision
+         } = running_entry
+       )
+       when is_binary(revision),
+       do: running_entry
+
   defp maybe_dispatch_target_requirements(running_entry) do
     with pid when is_pid(pid) <- Map.get(running_entry, :pid),
          revision when is_binary(revision) <- Map.get(running_entry, :requirements_target_revision),
@@ -562,15 +575,29 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp integrate_requirements_result(
          %{requirements_inflight_revision: revision} = running_entry,
-         {:ok, revision}
+         {:accepted, revision}
+       )
+       when is_binary(revision) do
+    running_entry
+    |> Map.put(:requirements_accepted_revision, revision)
+    |> Map.put(:requirements_accepted_context, Map.get(running_entry, :requirements_inflight_context))
+    |> Map.put(:requirements_inflight_revision, nil)
+    |> Map.put(:requirements_inflight_context, nil)
+    |> Map.put(:requirements_stale, true)
+    |> maybe_dispatch_target_requirements()
+  end
+
+  defp integrate_requirements_result(
+         %{requirements_accepted_revision: revision} = running_entry,
+         {:reconciled, revision}
        )
        when is_binary(revision) do
     updated_entry =
       running_entry
       |> Map.put(:requirements_delivered_revision, revision)
-      |> Map.put(:requirements_delivered_context, Map.get(running_entry, :requirements_inflight_context))
-      |> Map.put(:requirements_inflight_revision, nil)
-      |> Map.put(:requirements_inflight_context, nil)
+      |> Map.put(:requirements_delivered_context, Map.get(running_entry, :requirements_accepted_context))
+      |> Map.put(:requirements_accepted_revision, nil)
+      |> Map.put(:requirements_accepted_context, nil)
 
     if Map.get(updated_entry, :requirements_target_revision) == revision do
       updated_entry
@@ -579,7 +606,9 @@ defmodule SymphonyElixir.Orchestrator do
       |> Map.put(:requirements_target_context, nil)
       |> Map.put(:requirements_target_prompt, nil)
     else
-      maybe_dispatch_target_requirements(updated_entry)
+      updated_entry
+      |> Map.put(:requirements_stale, true)
+      |> maybe_dispatch_target_requirements()
     end
   end
 
@@ -981,6 +1010,8 @@ defmodule SymphonyElixir.Orchestrator do
             requirements_delivered_context: RequirementsContext.context(issue),
             requirements_inflight_revision: nil,
             requirements_inflight_context: nil,
+            requirements_accepted_revision: nil,
+            requirements_accepted_context: nil,
             requirements_target_revision: nil,
             requirements_target_context: nil,
             requirements_target_prompt: nil,

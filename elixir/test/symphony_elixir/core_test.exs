@@ -820,16 +820,139 @@ defmodule SymphonyElixir.CoreTest do
     refute_receive {:steer_requirements, ^issue_id, ^final_revision, _prompt}
     assert coalesced_state.running[issue_id].requirements_target_revision == final_revision
 
-    assert {:noreply, delivered_state} =
+    assert {:noreply, accepted_state} =
              Orchestrator.handle_info(
-               {:requirements_revision_result, issue_id, {:ok, first_revision}},
+               {:requirements_revision_result, issue_id, {:accepted, first_revision}},
                coalesced_state
              )
 
     assert_receive {:steer_requirements, ^issue_id, ^final_revision, final_prompt}
     assert final_prompt =~ "collapse all"
-    assert delivered_state.running[issue_id].requirements_inflight_revision == final_revision
-    assert delivered_state.running[issue_id].requirements_stale
+    assert accepted_state.running[issue_id].requirements_inflight_revision == final_revision
+    assert accepted_state.running[issue_id].requirements_accepted_revision == first_revision
+    assert accepted_state.running[issue_id].requirements_delivered_revision == original_revision
+    assert accepted_state.running[issue_id].requirements_stale
+  end
+
+  test "handoff remains latched after steer acceptance until the same turn reconciles the final revision" do
+    issue_id = "issue-requirements-reconciliation-latch"
+    test_pid = self()
+
+    agent_pid =
+      spawn(fn ->
+        relay = fn relay ->
+          receive do
+            :stop ->
+              :ok
+
+            message ->
+              send(test_pid, message)
+              relay.(relay)
+          end
+        end
+
+        relay.(relay)
+      end)
+
+    on_exit(fn ->
+      if Process.alive?(agent_pid), do: send(agent_pid, :stop)
+    end)
+
+    original_issue = %Issue{
+      id: issue_id,
+      identifier: "OCL-27",
+      state: "In Progress",
+      title: "Original title",
+      description: "Original requirements"
+    }
+
+    original_revision = RequirementsContext.revision(original_issue)
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "OCL-27",
+          issue: original_issue,
+          requirements_delivered_revision: original_revision,
+          requirements_delivered_context: RequirementsContext.context(original_issue),
+          requirements_inflight_revision: nil,
+          requirements_inflight_context: nil,
+          requirements_accepted_revision: nil,
+          requirements_accepted_context: nil,
+          requirements_target_revision: nil,
+          requirements_target_context: nil,
+          requirements_target_prompt: nil,
+          requirements_stale: false,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    beta_issue = %{
+      original_issue
+      | requirement_updates: ["## Requirements Update\nBETA"]
+    }
+
+    beta_revision = RequirementsContext.revision(beta_issue)
+    beta_state = Orchestrator.reconcile_issue_states_for_test([beta_issue], state)
+    assert_receive {:steer_requirements, ^issue_id, ^beta_revision, _prompt}
+
+    gamma_issue = %{
+      beta_issue
+      | state: "In Review",
+        requirement_updates: [
+          "## Requirements Update\nBETA",
+          "## Requirements Update\nGAMMA"
+        ]
+    }
+
+    gamma_revision = RequirementsContext.revision(gamma_issue)
+    gamma_state = Orchestrator.reconcile_issue_states_for_test([gamma_issue], beta_state)
+
+    assert {:noreply, beta_accepted_state} =
+             Orchestrator.handle_info(
+               {:requirements_revision_result, issue_id, {:accepted, beta_revision}},
+               gamma_state
+             )
+
+    assert_receive {:steer_requirements, ^issue_id, ^gamma_revision, gamma_prompt}
+    assert gamma_prompt =~ "GAMMA"
+
+    assert {:noreply, gamma_accepted_state} =
+             Orchestrator.handle_info(
+               {:requirements_revision_result, issue_id, {:accepted, gamma_revision}},
+               beta_accepted_state
+             )
+
+    assert gamma_accepted_state.running[issue_id].requirements_stale
+    assert gamma_accepted_state.running[issue_id].requirements_accepted_revision == gamma_revision
+    assert gamma_accepted_state.running[issue_id].requirements_delivered_revision == original_revision
+
+    second_handoff_poll =
+      Orchestrator.reconcile_issue_states_for_test([gamma_issue], gamma_accepted_state)
+
+    assert Map.has_key?(second_handoff_poll.running, issue_id)
+    assert Process.alive?(agent_pid)
+    refute_receive {:steer_requirements, ^issue_id, ^gamma_revision, _prompt}
+
+    assert {:noreply, reconciled_state} =
+             Orchestrator.handle_info(
+               {:requirements_revision_result, issue_id, {:reconciled, gamma_revision}},
+               second_handoff_poll
+             )
+
+    assert reconciled_state.running[issue_id].requirements_delivered_revision == gamma_revision
+    refute reconciled_state.running[issue_id].requirements_stale
+
+    stopped_state = Orchestrator.reconcile_issue_states_for_test([gamma_issue], reconciled_state)
+
+    refute Map.has_key?(stopped_state.running, issue_id)
+    refute Process.alive?(agent_pid)
   end
 
   test "failed requirements steer remains stale and retries on the next refresh" do

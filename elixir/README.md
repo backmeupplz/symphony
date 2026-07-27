@@ -25,10 +25,12 @@ task title, description, and canonical operator requirement updates with the rev
 that worker. In Kaneo, an operator requirement update is comment activity whose first normalized
 line is exactly `## Requirements Update`; the client fetches those comments during running-task
 refresh and orders them by creation time plus activity ID. A newer revision is coalesced and sent to
-the same active thread with Codex app-server `turn/steer`. Symphony records the revision as
-delivered only after the app-server acknowledges it. Tracker state, timestamps, assignment,
-untagged comments, non-comment activity, and generated activity such as the Codex workpad are
-excluded from the revision, so normal progress updates cannot create a self-steering loop.
+the same active thread with Codex app-server `turn/steer`. A successful app-server response records
+the revision as accepted by the turn, but the worker remains stale through handoff polling until that
+same turn completes and therefore proves the queued requirement had an opportunity to surface and be
+reconciled. Only then does Symphony advance the delivered revision. Tracker state, timestamps,
+assignment, untagged comments, non-comment activity, and generated activity such as the Codex
+workpad are excluded from the revision, so normal progress updates cannot create a self-steering loop.
 If Kaneo activity cannot be fetched, running-task refresh fails closed instead of treating missing
 operator updates as an empty context.
 
@@ -38,10 +40,11 @@ configured active/terminal state lists. This keeps the original worker alive whe
 confirmed task-ID `404` is still treated as genuinely missing; other task/activity fetch failures
 keep the worker active for a later retry.
 
-If steering fails or the turn finishes before the acknowledgement, the worker remains stale.
-Before accepting completion or a review/testing handoff, Symphony refetches the canonical task and
-starts a same-thread continuation containing the full current requirements. Cancellation states
-still stop the worker immediately.
+If steering fails, the turn finishes before acknowledgement, or canonical context advances again,
+the worker remains stale. Before accepting completion or a review/testing handoff, Symphony
+refetches the canonical task and starts a same-thread continuation containing the full current
+requirements. That continuation is the compatibility fallback when active-turn steering cannot
+deliver the current revision. Cancellation states still stop the worker immediately.
 
 During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
 skills can make raw Linear GraphQL calls.

@@ -115,6 +115,7 @@ defmodule SymphonyElixir.Codex.AppServer do
           on_requirements_result: on_requirements_result,
           pending_steer: nil,
           queued_steer: nil,
+          requirements_reconciliation_revision: nil,
           next_request_id: @turn_steer_id
         }
 
@@ -474,7 +475,12 @@ defmodule SymphonyElixir.Codex.AppServer do
     case decoded do
       {:ok, %{"method" => "turn/completed"} = payload} ->
         emit_turn_event(on_message, :turn_completed, payload, payload_string, port, payload)
-        completed_context = fail_pending_steer(turn_context, :turn_completed_before_steer_ack)
+
+        completed_context =
+          turn_context
+          |> fail_pending_steer(:turn_completed_before_steer_ack)
+          |> notify_reconciled_requirements()
+
         {:ok, :turn_completed, completed_context}
 
       {:ok, %{"method" => "turn/failed", "params" => _} = payload} ->
@@ -569,7 +575,7 @@ defmodule SymphonyElixir.Codex.AppServer do
 
   defp queue_requirements_steer(_port, turn_context, revision, _prompt)
        when revision == turn_context.requirements_revision do
-    notify_requirements_result(turn_context, {:ok, revision})
+    notify_requirements_result(turn_context, {:accepted, revision})
     turn_context
   end
 
@@ -611,11 +617,12 @@ defmodule SymphonyElixir.Codex.AppServer do
               (is_map_key(payload, "result") or is_map_key(payload, "error")) do
     case payload do
       %{"result" => %{"turnId" => turn_id}} when turn_id == turn_context.turn_id ->
-        notify_requirements_result(turn_context, {:ok, pending.revision})
+        notify_requirements_result(turn_context, {:accepted, pending.revision})
 
         updated_context = %{
           turn_context
           | requirements_revision: pending.revision,
+            requirements_reconciliation_revision: pending.revision,
             pending_steer: nil
         }
 
@@ -652,7 +659,7 @@ defmodule SymphonyElixir.Codex.AppServer do
          _port
        )
        when revision == turn_context.requirements_revision do
-    notify_requirements_result(turn_context, {:ok, revision})
+    notify_requirements_result(turn_context, {:accepted, revision})
     %{turn_context | queued_steer: nil}
   end
 
@@ -676,6 +683,14 @@ defmodule SymphonyElixir.Codex.AppServer do
   defp notify_requirements_result(turn_context, result) do
     turn_context.on_requirements_result.(result)
   end
+
+  defp notify_reconciled_requirements(%{requirements_reconciliation_revision: revision} = turn_context)
+       when is_binary(revision) do
+    notify_requirements_result(turn_context, {:reconciled, revision})
+    %{turn_context | requirements_reconciliation_revision: nil}
+  end
+
+  defp notify_reconciled_requirements(turn_context), do: turn_context
 
   defp emit_turn_event(on_message, event, payload, payload_string, port, payload_details) do
     emit_message(
