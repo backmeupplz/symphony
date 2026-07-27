@@ -54,19 +54,18 @@ defmodule SymphonyElixir.KaneoClientTest do
       send(self(), {:kaneo_request, opts[:method], opts[:url]})
 
       cond do
-        String.ends_with?(opts[:url], "/task/tasks/project-a") ->
+        String.ends_with?(opts[:url], "/task/task-1") ->
           {:ok,
            %Req.Response{
              status: 200,
-             body: [
-               %{
-                 "id" => "task-1",
-                 "number" => 27,
-                 "title" => "Steer active workers",
-                 "description" => "Original requirements",
-                 "status" => "in-progress"
-               }
-             ]
+             body: %{
+               "id" => "task-1",
+               "number" => 27,
+               "title" => "Steer active workers",
+               "description" => "Original requirements",
+               "status" => "in-progress",
+               "projectId" => "project-a"
+             }
            }}
 
         String.ends_with?(opts[:url], "/activity/task-1") ->
@@ -100,6 +99,65 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert_receive {:kaneo_request, :get, "https://kaneo.test/api/activity/task-1"}
   end
 
+  test "fetches a running issue canonically after active-state polling omits its handoff state" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a",
+      tracker_active_states: ["in-progress", "rework"],
+      tracker_terminal_states: ["done"]
+    )
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
+      send(self(), {:kaneo_request, opts[:method], opts[:url]})
+
+      cond do
+        String.ends_with?(opts[:url], "/task/task-1") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{
+               "id" => "task-1",
+               "number" => 27,
+               "title" => "Steer active workers",
+               "description" => "Original requirements",
+               "status" => "in-review",
+               "projectId" => "project-a",
+               "userId" => "worker-1"
+             }
+           }}
+
+        String.ends_with?(opts[:url], "/activity/task-1") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: [
+               %{
+                 "id" => "requirement-final",
+                 "type" => "comment",
+                 "content" => "## Requirements Update\nReconcile the final requirement.",
+                 "createdAt" => "2026-07-27T17:10:06Z"
+               }
+             ]
+           }}
+
+        String.contains?(opts[:url], "/task/tasks/") ->
+          {:ok, %Req.Response{status: 200, body: []}}
+      end
+    end)
+
+    assert {:ok, [issue]} = KaneoClient.fetch_issue_states_by_ids(["task-1"])
+    assert issue.state == "in-review"
+
+    assert issue.requirement_updates == [
+             "## Requirements Update\nReconcile the final requirement."
+           ]
+
+    assert_receive {:kaneo_request, :get, "https://kaneo.test/api/task/task-1"}
+    refute_receive {:kaneo_request, :get, "https://kaneo.test/api/task/tasks/project-a"}
+  end
+
   test "running issue refresh fails closed when requirement activity cannot be fetched" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "kaneo",
@@ -111,19 +169,46 @@ defmodule SymphonyElixir.KaneoClientTest do
     )
 
     Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
-      if String.contains?(opts[:url], "/activity/") do
-        {:ok, %Req.Response{status: 503, body: "Unavailable"}}
-      else
-        {:ok,
-         %Req.Response{
-           status: 200,
-           body: [%{"id" => "task-1", "number" => 27, "status" => "in-progress"}]
-         }}
+      cond do
+        String.contains?(opts[:url], "/activity/") ->
+          {:ok, %Req.Response{status: 503, body: "Unavailable"}}
+
+        String.ends_with?(opts[:url], "/task/task-1") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{
+               "id" => "task-1",
+               "number" => 27,
+               "status" => "in-progress",
+               "projectId" => "project-a"
+             }
+           }}
       end
     end)
 
     assert {:error, {:kaneo_requirements_activity_status, "task-1", 503}} =
              KaneoClient.fetch_issue_states_by_ids(["task-1"])
+  end
+
+  test "canonical running issue refresh treats a deleted task as missing" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a"
+    )
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
+      send(self(), {:kaneo_request, opts[:method], opts[:url]})
+      {:ok, %Req.Response{status: 404, body: "Not Found"}}
+    end)
+
+    assert {:ok, []} = KaneoClient.fetch_issue_states_by_ids(["deleted-task"])
+
+    assert_receive {:kaneo_request, :get, "https://kaneo.test/api/task/deleted-task"}
+
+    refute_receive {:kaneo_request, :get, "https://kaneo.test/api/activity/deleted-task"}
   end
 
   test "normalizes Kaneo tasks with project-aware identifiers and repo routing" do
@@ -263,6 +348,15 @@ defmodule SymphonyElixir.KaneoClientTest do
           String.contains?(opts[:url], "/activity/") ->
             []
 
+          String.ends_with?(opts[:url], "/task/task-a") ->
+            %{
+              "id" => "task-a",
+              "number" => 1,
+              "title" => "Alpha task",
+              "status" => "in-review",
+              "projectId" => "project-a"
+            }
+
           String.ends_with?(opts[:url], "/task/tasks/project-a") ->
             %{
               "data" => %{
@@ -321,14 +415,9 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert {:ok, [issue]} = KaneoClient.fetch_issue_states_by_ids(["task-a"])
     assert issue.id == "task-a"
     assert issue.identifier == "ALPHA-KANEO-1"
+    assert issue.state == "in-review"
 
-    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
-
-    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a", [status: "done", sortBy: "priority", sortOrder: "asc"]}
-
-    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
-
-    assert_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-b", [status: "done", sortBy: "priority", sortOrder: "asc"]}
+    assert_receive {:kaneo_request, "https://kaneo.test/api/task/task-a", nil}
 
     assert {:ok, planned_issues} = KaneoClient.fetch_issues_by_states(["planned", " "])
     assert Enum.map(planned_issues, & &1.identifier) == ["ALPHA-KANEO-1", "BETA-KANEO-1"]
@@ -456,6 +545,9 @@ defmodule SymphonyElixir.KaneoClientTest do
       send(self(), {:kaneo_fetch, opts[:url], opts[:params]})
 
       cond do
+        String.ends_with?(opts[:url], "/task/task-a") ->
+          {:error, :boom}
+
         String.ends_with?(opts[:url], "/task/tasks/project-a") ->
           {:ok, %Req.Response{status: 200, body: [%{"id" => "task-a", "status" => "to-do"}]}}
 
@@ -470,6 +562,8 @@ defmodule SymphonyElixir.KaneoClientTest do
     assert_receive {:kaneo_fetch, "https://kaneo.test/api/task/tasks/project-a", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
 
     assert_receive {:kaneo_fetch, "https://kaneo.test/api/task/tasks/project-b", [status: "to-do", sortBy: "priority", sortOrder: "asc"]}
+
+    assert_receive {:kaneo_fetch, "https://kaneo.test/api/task/task-a", nil}
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_kind: "kaneo",

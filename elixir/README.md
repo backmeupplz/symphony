@@ -32,6 +32,12 @@ excluded from the revision, so normal progress updates cannot create a self-stee
 If Kaneo activity cannot be fetched, running-task refresh fails closed instead of treating missing
 operator updates as an empty context.
 
+Running Kaneo tasks are refreshed directly by task ID rather than rediscovered through the
+configured active/terminal state lists. This keeps the original worker alive when a task moves to
+`in-review` with undelivered requirements even though candidate polling no longer returns it. A
+confirmed task-ID `404` is still treated as genuinely missing; other task/activity fetch failures
+keep the worker active for a later retry.
+
 If steering fails or the turn finishes before the acknowledgement, the worker remains stale.
 Before accepting completion or a review/testing handoff, Symphony refetches the canonical task and
 starts a same-thread continuation containing the full current requirements. Cancellation states
