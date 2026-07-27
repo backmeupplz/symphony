@@ -301,13 +301,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_running_issues(%State{} = state) do
+    reconcile_running_issues(state, &Tracker.fetch_issue_states_by_ids/1)
+  end
+
+  defp reconcile_running_issues(%State{} = state, issue_fetcher)
+       when is_function(issue_fetcher, 1) do
     state = reconcile_stalled_running_issues(state)
     running_ids = Map.keys(state.running)
 
     if running_ids == [] do
       state
     else
-      case Tracker.fetch_issue_states_by_ids(running_ids) do
+      case issue_fetcher.(running_ids) do
         {:ok, issues} ->
           issues
           |> reconcile_running_issue_states(
@@ -333,6 +338,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   def reconcile_issue_states_for_test(issues, state) when is_list(issues) do
     reconcile_running_issue_states(issues, state, active_state_set(), terminal_state_set())
+  end
+
+  @doc false
+  @spec reconcile_running_issues_for_test(
+          term(),
+          ([String.t()] -> {:ok, [Issue.t()]} | {:error, term()})
+        ) :: term()
+  def reconcile_running_issues_for_test(%State{} = state, issue_fetcher)
+      when is_function(issue_fetcher, 1) do
+    reconcile_running_issues(state, issue_fetcher)
   end
 
   @doc false

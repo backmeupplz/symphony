@@ -44,18 +44,9 @@ defmodule SymphonyElixir.Kaneo.Client do
     projects = Config.kaneo_projects(settings)
 
     with :ok <- validate_tracker_config(tracker, projects),
-         {:ok, wanted_ids} <- normalize_issue_ids(issue_ids) do
-      projects
-      |> fetch_projects_by_states(&project_refresh_states/1)
-      |> case do
-        {:ok, issues} ->
-          issues
-          |> Enum.filter(&MapSet.member?(wanted_ids, &1.id))
-          |> hydrate_requirement_updates()
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+         {:ok, wanted_ids} <- normalize_issue_ids(issue_ids),
+         {:ok, issues} <- fetch_tasks_by_ids(wanted_ids, projects) do
+      hydrate_requirement_updates(issues)
     end
   end
 
@@ -169,6 +160,42 @@ defmodule SymphonyElixir.Kaneo.Client do
     end
   end
 
+  defp fetch_tasks_by_ids(wanted_ids, projects) do
+    Enum.reduce_while(wanted_ids, {:ok, []}, fn issue_id, {:ok, issues} ->
+      case fetch_task_by_id(issue_id, projects) do
+        {:ok, nil} -> {:cont, {:ok, issues}}
+        {:ok, issue} -> {:cont, {:ok, [issue | issues]}}
+        {:error, reason} -> {:halt, {:error, reason}}
+      end
+    end)
+    |> case do
+      {:ok, issues} -> {:ok, sort_and_dedupe_issues(issues)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp fetch_task_by_id(issue_id, projects) do
+    case request(:get, "/task/#{URI.encode(issue_id)}") do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        case unwrap_task_response(body) do
+          task when is_map(task) ->
+            {:ok, normalize_task(task, project_for_task(task, projects))}
+
+          _ ->
+            {:error, {:kaneo_task_response, issue_id}}
+        end
+
+      {:ok, %{status: 404}} ->
+        {:ok, nil}
+
+      {:ok, %{status: status}} ->
+        {:error, {:kaneo_api_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp hydrate_requirement_updates(issues) when is_list(issues) do
     Enum.reduce_while(issues, {:ok, []}, fn
       %Issue{id: issue_id} = issue, {:ok, hydrated} when is_binary(issue_id) ->
@@ -268,6 +295,11 @@ defmodule SymphonyElixir.Kaneo.Client do
   defp flatten_tasks_response(%{tasks: tasks}) when is_list(tasks), do: tasks
   defp flatten_tasks_response(_response), do: []
 
+  defp unwrap_task_response(%{"data" => task}) when is_map(task), do: task
+  defp unwrap_task_response(%{data: task}) when is_map(task), do: task
+  defp unwrap_task_response(task) when is_map(task), do: task
+  defp unwrap_task_response(_response), do: nil
+
   defp normalize_issue_ids(issue_ids) do
     issue_ids =
       issue_ids
@@ -300,10 +332,16 @@ defmodule SymphonyElixir.Kaneo.Client do
 
   defp project_active_states(%{active_states: active_states}) when is_list(active_states), do: active_states
 
-  defp project_refresh_states(%{active_states: active_states, terminal_states: terminal_states}) do
-    (active_states ++ terminal_states)
-    |> Enum.uniq()
+  defp project_for_task(task, projects) do
+    project_id = task_field(task, "projectId")
+
+    Enum.find(projects, fn project ->
+      project.id == project_id
+    end) || single_project(projects)
   end
+
+  defp single_project([project]), do: project
+  defp single_project(_projects), do: nil
 
   defp normalize_task(task, project \\ nil)
 

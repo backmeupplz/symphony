@@ -1,6 +1,7 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
 
+  alias SymphonyElixir.Kaneo.Client, as: KaneoClient
   alias SymphonyElixir.Linear.Adapter, as: LinearAdapter
   alias SymphonyElixir.RequirementsContext
   alias SymphonyElixir.Tracker.Memory, as: MemoryTracker
@@ -930,6 +931,142 @@ defmodule SymphonyElixir.CoreTest do
     assert updated_state.running[issue_id].requirements_stale
     assert_receive {:steer_requirements, ^issue_id, ^updated_revision, prompt}
     assert prompt =~ "collapse all"
+  end
+
+  test "Kaneo handoff omitted from active polling keeps the same worker for canonical requirements" do
+    previous_request_fun = Application.get_env(:symphony_elixir, :kaneo_request_fun)
+    issue_id = "issue-canonical-handoff"
+    test_pid = self()
+
+    agent_pid =
+      spawn(fn ->
+        receive do
+          message ->
+            send(test_pid, message)
+
+            receive do
+              :stop -> :ok
+            end
+        end
+      end)
+
+    on_exit(fn ->
+      restore_app_env(:kaneo_request_fun, previous_request_fun)
+
+      if Process.alive?(agent_pid) do
+        send(agent_pid, :stop)
+      end
+    end)
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_kind: "kaneo",
+      tracker_endpoint: "https://kaneo.test/api",
+      tracker_api_token: "token",
+      tracker_project_id: "project-a",
+      tracker_assignee: "worker-1",
+      tracker_active_states: ["in-progress", "rework"],
+      tracker_terminal_states: ["done"]
+    )
+
+    original_issue = %Issue{
+      id: issue_id,
+      identifier: "OCL-KANEO-27",
+      state: "in-progress",
+      title: "Steer active workers",
+      description: "Original requirements"
+    }
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: agent_pid,
+          ref: nil,
+          identifier: "OCL-KANEO-27",
+          issue: original_issue,
+          requirements_delivered_revision: RequirementsContext.revision(original_issue),
+          requirements_delivered_context: RequirementsContext.context(original_issue),
+          requirements_inflight_revision: nil,
+          requirements_target_revision: nil,
+          requirements_stale: false,
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([issue_id]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    Application.put_env(:symphony_elixir, :kaneo_request_fun, fn opts ->
+      send(self(), {:kaneo_request, opts[:url]})
+
+      cond do
+        String.ends_with?(opts[:url], "/task/#{issue_id}") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: %{
+               "id" => issue_id,
+               "number" => 27,
+               "title" => "Steer active workers",
+               "description" => "Original requirements",
+               "status" => "in-review",
+               "projectId" => "project-a",
+               "userId" => "worker-1"
+             }
+           }}
+
+        String.ends_with?(opts[:url], "/activity/#{issue_id}") ->
+          {:ok,
+           %Req.Response{
+             status: 200,
+             body: [
+               %{
+                 "id" => "requirement-alpha",
+                 "type" => "comment",
+                 "content" => "## Requirements Update\nAdd alpha.",
+                 "createdAt" => "2026-07-27T17:10:05Z"
+               },
+               %{
+                 "id" => "requirement-omega",
+                 "type" => "comment",
+                 "content" => "## Requirements Update\nReconcile omega before handoff.",
+                 "createdAt" => "2026-07-27T17:10:06Z"
+               }
+             ]
+           }}
+
+        String.contains?(opts[:url], "/task/tasks/") ->
+          {:ok, %Req.Response{status: 200, body: []}}
+      end
+    end)
+
+    assert {:ok, [canonical_issue]} =
+             KaneoClient.fetch_issue_states_by_ids([issue_id])
+
+    assert Config.settings!().tracker.assignee == "worker-1"
+    assert canonical_issue.assignee_id == "worker-1"
+    assert canonical_issue.assigned_to_worker
+    assert canonical_issue.state == "in-review"
+
+    updated_state =
+      Orchestrator.reconcile_running_issues_for_test(state, fn [^issue_id] ->
+        {:ok, [canonical_issue]}
+      end)
+
+    assert updated_state.running[issue_id].pid == agent_pid
+    assert updated_state.running[issue_id].issue.state == "in-review"
+    assert updated_state.running[issue_id].requirements_stale
+    assert Process.alive?(agent_pid)
+    assert updated_state.retry_attempts == %{}
+
+    assert_receive {:steer_requirements, ^issue_id, revision, prompt}
+    assert revision == updated_state.running[issue_id].requirements_inflight_revision
+    assert prompt =~ "Add alpha."
+    assert prompt =~ "Reconcile omega before handoff."
+
+    expected_task_url = "https://kaneo.test/api/task/#{issue_id}"
+    assert_receive {:kaneo_request, ^expected_task_url}
+    refute_receive {:kaneo_request, "https://kaneo.test/api/task/tasks/project-a"}
   end
 
   test "reconcile claims unassigned Kaneo running issues before refreshing active state" do

@@ -998,6 +998,13 @@ Active requirements refresh:
 - If Kaneo requirement activity cannot be fetched during a running-task refresh, the refresh MUST
   fail closed so neither the delivered revision nor completion/handoff can advance from incomplete
   canonical context.
+- Kaneo running-task refresh MUST fetch each task through its task-ID endpoint, independently of
+  candidate-state polling filters. A task that moves to a review/handoff state can disappear from
+  the active-state list while its worker is still running; that omission MUST NOT be interpreted as
+  deletion or permission loss before the canonical task fetch and requirements comparison.
+- A confirmed task-ID `404` MAY be treated as a genuinely missing task and stop its worker. Other
+  task or activity fetch failures MUST keep the worker active and retry rather than accepting stale
+  state.
 - When polling observes a newer revision for a running worker, it MUST route the update through the
   process that owns the app-server transport. Concurrent orchestrator processes MUST NOT write
   directly to the JSON-RPC stream.
